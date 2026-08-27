@@ -8,6 +8,7 @@ from app.schemas.payment_plan import PaymentPlanCreate, PaymentPlanRead
 from app.schemas.installment import InstallmentCreate, InstallmentRead
 from app.schemas.invoice import InvoiceCreate, InvoiceRead
 from app.schemas.audit_event import AuditEventCreate, AuditEventRead
+from app.schemas.webhook_event import WebhookEventRead
 
 __all__ = [
     "CustomerCreate", "CustomerRead",
@@ -20,4 +21,5 @@ __all__ = [
     "InstallmentCreate", "InstallmentRead",
     "InvoiceCreate", "InvoiceRead",
     "AuditEventCreate", "AuditEventRead",
+    "WebhookEventRead",
 ]

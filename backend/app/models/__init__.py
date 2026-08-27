@@ -8,6 +8,7 @@ from app.models.payment_plan import PaymentPlan
 from app.models.installment import Installment
 from app.models.invoice import Invoice
 from app.models.audit_event import AuditEvent
+from app.models.webhook_event import WebhookEvent
 
 __all__ = [
     "Customer",
@@ -20,4 +21,5 @@ __all__ = [
     "Installment",
     "Invoice",
     "AuditEvent",
+    "WebhookEvent",
 ]

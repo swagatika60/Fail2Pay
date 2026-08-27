@@ -16,6 +16,11 @@ from app.crud.recovery_case import (
     get_recovery_cases_by_status,
     update_recovery_case_status,
 )
+from app.crud.audit_event import create_audit_event
+from app.crud.webhook_event import (
+    get_webhook_event_by_event_id,
+    store_webhook_event,
+)
 
 __all__ = [
     "create_customer",
@@ -30,4 +35,7 @@ __all__ = [
     "get_recovery_cases_by_customer",
     "get_recovery_cases_by_status",
     "update_recovery_case_status",
+    "create_audit_event",
+    "get_webhook_event_by_event_id",
+    "store_webhook_event",
 ]
