@@ -184,10 +184,23 @@ def process_payment_failed(db: Session, payload: dict) -> dict:
         amount,
     )
 
+    # --- Step 8: Initiate recovery workflow ---
+    # Connect payment failure → recovery case → policy → WhatsApp → schedule
+    from app.services.orchestrator import initiate_recovery
+
+    recovery_result = initiate_recovery(db, recovery_case.id)
+    logger.info(
+        "Recovery initiation result for case %s: %s",
+        recovery_case.id,
+        recovery_result.get("status"),
+    )
+
     return {
         "status": "processed",
         "case_id": str(recovery_case.id),
         "payment_id": payment_id,
+        "recovery_initiated": recovery_result.get("status") == "initiated",
+        "recovery_result": recovery_result,
     }
 
 
@@ -236,9 +249,14 @@ def process_payment_captured(db: Session, payload: dict) -> dict:
     db.commit()
 
     # --- Step 3: Find related recovery case ---
-    recovery_cases = get_recovery_cases_by_status(
-        db, RecoveryStatus.AT_RISK
-    ) + get_recovery_cases_by_status(db, RecoveryStatus.PARTIALLY_RECOVERED)
+    # Search all non-terminal statuses (case may have moved from AT_RISK to RECOVERY_IN_PROGRESS)
+    recovery_cases = (
+        get_recovery_cases_by_status(db, RecoveryStatus.AT_RISK)
+        + get_recovery_cases_by_status(db, RecoveryStatus.RECOVERY_IN_PROGRESS)
+        + get_recovery_cases_by_status(db, RecoveryStatus.PARTIALLY_RECOVERED)
+        + get_recovery_cases_by_status(db, RecoveryStatus.PROMISED)
+        + get_recovery_cases_by_status(db, RecoveryStatus.SCHEDULED)
+    )
 
     target_case = None
     for case in recovery_cases:

@@ -9,6 +9,8 @@ from app.models.installment import Installment
 from app.models.invoice import Invoice
 from app.models.audit_event import AuditEvent
 from app.models.webhook_event import WebhookEvent
+from app.models.scheduled_action import ScheduledAction
+from app.models.email import SentEmail
 
 __all__ = [
     "Customer",
@@ -22,4 +24,6 @@ __all__ = [
     "Invoice",
     "AuditEvent",
     "WebhookEvent",
+    "ScheduledAction",
+    "SentEmail",
 ]

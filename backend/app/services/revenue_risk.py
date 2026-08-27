@@ -170,10 +170,10 @@ def _assess_payment_failed(
 
     # Check for account-level issues (not recoverable)
     is_account_issue = failure_reason in ("frozen", "blocked", "account_closed")
-    is_fraud = failure_code in ("fraud_detected", " suspicious_activity")
+    is_fraud = failure_code in ("fraud_detected", "suspicious_activity")
 
-    # Determine risk level based on amount
-    if amount >= HIGH_AMOUNT_THRESHOLD or is_account_issue:
+    # Determine risk level based on amount and special conditions
+    if is_fraud or is_account_issue or amount >= HIGH_AMOUNT_THRESHOLD:
         risk_level = "HIGH"
     elif amount >= MEDIUM_AMOUNT_THRESHOLD:
         risk_level = "MEDIUM"
@@ -223,9 +223,11 @@ def _assess_repeated_payment_failure(
     - Not recoverable if >= 5 failures (customer is unlikely to pay)
     """
     from app.models.revenue_event import RevenueEvent
+    from uuid import UUID as _UUID
 
     # Count past failures for this customer
-    past_events = get_revenue_events_by_customer(db, customer_id=customer_id)
+    customer_uuid = _UUID(customer_id) if isinstance(customer_id, str) else customer_id
+    past_events = get_revenue_events_by_customer(db, customer_id=customer_uuid)
     past_failures = [
         e for e in past_events
         if e.event_type in ("payment_failed", "repeated_payment_failure")

@@ -1,0 +1,345 @@
+"""Bounded AI Intent Detection Service with Multilingual Support.
+
+AI is ONLY responsible for understanding customer messages.
+It must NOT directly execute actions. The backend decides what action to take.
+
+Supports: English, Hindi, Hinglish, Odia
+- Same intent taxonomy across languages
+- Language-specific rule-based fallback
+- AI can handle any language
+- Language never changes safety rules
+
+Architecture:
+  1. Detect language from customer message
+  2. Try AI-based intent detection (with timeout)
+  3. If AI fails/unavailable → language-aware rule-based fallback
+  4. If confidence below threshold → return UNCLEAR
+  5. Backend maps intent → action (AI never does this)
+"""
+
+import json
+import logging
+import re
+import time
+from typing import Protocol
+
+import httpx
+
+from app.config import get_settings
+from app.schemas.intent import (
+    VALID_INTENTS,
+    CustomerIntent,
+    DEFAULT_CONFIDENCE_THRESHOLD,
+    IntentDetectionRequest,
+    IntentDetectionResponse,
+    IntentDetectionResult,
+)
+
+logger = logging.getLogger(__name__)
+
+# --- AI Provider Abstraction ---
+
+
+class AIProvider(Protocol):
+    """Protocol for AI providers. Swap implementations for different LLMs."""
+
+    def classify(self, system_prompt: str, user_message: str, timeout: float) -> str:
+        """Send a classification request to the AI and return raw response text."""
+        ...
+
+
+class OpenAIProvider:
+    """OpenAI-compatible API provider (works with OpenAI, Azure, etc.)."""
+
+    def __init__(self, api_key: str, model: str = "gpt-4o-mini", base_url: str = "https://api.openai.com/v1"):
+        self.api_key = api_key
+        self.model = model
+        self.base_url = base_url
+
+    def classify(self, system_prompt: str, user_message: str, timeout: float = 10.0) -> str:
+        """Send classification request to OpenAI-compatible API."""
+        url = f"{self.base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            "temperature": 0.0,  # Deterministic responses
+            "max_tokens": 100,
+            "response_format": {"type": "json_object"},
+        }
+
+        with httpx.Client(timeout=timeout) as client:
+            response = client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+
+        data = response.json()
+        return data["choices"][0]["message"]["content"]
+
+
+class MockAIProvider:
+    """Mock AI provider for testing."""
+
+    def __init__(self, response: str = "", should_fail: bool = False):
+        self._response = response
+        self._should_fail = should_fail
+        self.call_count = 0
+
+    def classify(self, system_prompt: str, user_message: str, timeout: float = 10.0) -> str:
+        self.call_count += 1
+        if self._should_fail:
+            raise RuntimeError("AI provider unavailable")
+        return self._response
+
+
+# --- System Prompt ---
+
+INTENT_CLASSIFICATION_PROMPT = """You are a customer intent classifier for a payment recovery system.
+
+Your ONLY job is to classify the customer's message into one of these intents:
+- PAYMENT_RETRY_REQUEST: Customer wants to retry/reattempt their failed payment
+- PAYMENT_LINK_REQUEST: Customer is asking for a payment link
+- INVOICE_REQUEST: Customer wants an invoice for the payment
+- PAYMENT_PLAN_REQUEST: Customer wants to set up installments/payment plan
+- PROMISE_TO_PAY: Customer is promising they will pay (with or without a date)
+- ALREADY_PAID: Customer claims they have already made the payment
+- QUESTION: Customer has a general question about the payment/billing
+- NEGATIVE: Customer is refusing to pay, angry, or expressing frustration
+- STOP_REQUEST: Customer wants to stop receiving messages
+- UNCLEAR: The message is unclear, in an unsupported language, or doesn't fit any category
+
+You MUST handle messages in ANY language — English, Hindi, Hinglish, Odia, or mixed.
+The intent taxonomy is the SAME regardless of language.
+
+Examples across languages:
+- "Kal payment kar dunga" → PROMISE_TO_PAY
+- "Payment link bhejo" → PAYMENT_LINK_REQUEST
+- "Mu kali payment karibi" → PROMISE_TO_PAY
+- "Please stop messaging me" → STOP_REQUEST
+- "मैं पैसा दे दूंगा" → PROMISE_TO_PAY
+- "बिल भेजो" → INVOICE_REQUEST
+
+Respond with ONLY a JSON object:
+{"intent": "INTENT_NAME", "confidence": 0.0-1.0}
+
+Rules:
+- Be conservative with confidence. Only assign high confidence (>0.8) when the intent is clear.
+- If the message is ambiguous, use UNCLEAR with low confidence.
+- Do NOT attempt to take any actions. You only classify.
+- Do NOT generate payment links, invoices, or any other resources.
+- Language does NOT change the intent — same rules apply to all languages.
+"""
+
+
+# --- Deterministic Rule-Based Fallback ---
+
+
+def _rule_based_classify(message: str, language: str = "en") -> IntentDetectionResult:
+    """Deterministic rule-based intent classification with multilingual support.
+
+    Used as fallback when AI is unavailable or times out.
+    Uses language-specific patterns from the multilingual service.
+    """
+    from app.services.multilingual import get_patterns_for_language
+
+    msg_lower = message.lower().strip()
+    patterns = get_patterns_for_language(language)
+
+    # Stop request patterns
+    if patterns.stop and any(re.search(p, msg_lower) for p in patterns.stop):
+        return IntentDetectionResult(intent=CustomerIntent.STOP_REQUEST, confidence=0.85)
+
+    # Already paid patterns
+    if patterns.already_paid and any(re.search(p, msg_lower) for p in patterns.already_paid):
+        return IntentDetectionResult(intent=CustomerIntent.ALREADY_PAID, confidence=0.80)
+
+    # Negative patterns (checked before promise — "not paying" is not a promise)
+    if patterns.negative and any(re.search(p, msg_lower) for p in patterns.negative):
+        return IntentDetectionResult(intent=CustomerIntent.NEGATIVE, confidence=0.80)
+
+    # Promise to pay patterns
+    if patterns.promise_to_pay and any(re.search(p, msg_lower) for p in patterns.promise_to_pay):
+        return IntentDetectionResult(intent=CustomerIntent.PROMISE_TO_PAY, confidence=0.75)
+
+    # Payment retry patterns
+    if patterns.payment_retry and any(re.search(p, msg_lower) for p in patterns.payment_retry):
+        return IntentDetectionResult(intent=CustomerIntent.PAYMENT_RETRY_REQUEST, confidence=0.80)
+
+    # Invoice request patterns (checked before payment_link to avoid false positives)
+    if patterns.invoice and any(re.search(p, msg_lower) for p in patterns.invoice):
+        return IntentDetectionResult(intent=CustomerIntent.INVOICE_REQUEST, confidence=0.75)
+
+    # Payment link request patterns
+    if patterns.payment_link and any(re.search(p, msg_lower) for p in patterns.payment_link):
+        return IntentDetectionResult(intent=CustomerIntent.PAYMENT_LINK_REQUEST, confidence=0.80)
+
+    # Payment plan patterns
+    if patterns.payment_plan and any(re.search(p, msg_lower) for p in patterns.payment_plan):
+        return IntentDetectionResult(intent=CustomerIntent.PAYMENT_PLAN_REQUEST, confidence=0.80)
+
+    # Question patterns
+    if patterns.question and any(re.search(p, msg_lower) for p in patterns.question):
+        return IntentDetectionResult(intent=CustomerIntent.QUESTION, confidence=0.65)
+
+    # Default: UNCLEAR
+    return IntentDetectionResult(intent=CustomerIntent.UNCLEAR, confidence=0.30)
+
+
+# --- AI Response Parsing ---
+
+
+def _parse_ai_response(raw_response: str) -> IntentDetectionResult:
+    """Parse and validate AI response into IntentDetectionResult.
+
+    Validates that the intent is in the allowed set.
+    If invalid, returns UNCLEAR.
+    """
+    try:
+        data = json.loads(raw_response)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("Failed to parse AI response as JSON: %s", raw_response)
+        return IntentDetectionResult(
+            intent=CustomerIntent.UNCLEAR,
+            confidence=0.0,
+            raw_response=raw_response,
+        )
+
+    intent_str = data.get("intent", "")
+    confidence = float(data.get("confidence", 0.0))
+
+    # Validate intent is in allowed set
+    if intent_str not in VALID_INTENTS:
+        logger.warning("AI returned invalid intent: %s (not in allowed set)", intent_str)
+        return IntentDetectionResult(
+            intent=CustomerIntent.UNCLEAR,
+            confidence=0.0,
+            raw_response=raw_response,
+        )
+
+    # Clamp confidence to [0.0, 1.0]
+    confidence = max(0.0, min(1.0, confidence))
+
+    return IntentDetectionResult(
+        intent=CustomerIntent(intent_str),
+        confidence=confidence,
+        raw_response=raw_response,
+    )
+
+
+# --- Main Detection Function ---
+
+
+def detect_intent(
+    request: IntentDetectionRequest,
+    provider: AIProvider | None = None,
+) -> IntentDetectionResponse:
+    """Detect customer intent from a message.
+
+    This is the main entry point. It:
+    1. Detects the language of the message
+    2. Tries AI-based classification (with timeout)
+    3. Falls back to language-aware deterministic rules if AI fails
+    4. Applies confidence threshold
+
+    Args:
+        request: The intent detection request with message and context
+        provider: Optional AI provider override (for testing)
+
+    Returns:
+        IntentDetectionResponse with the detected intent and metadata
+    """
+    start_time = time.monotonic()
+    settings = get_settings()
+    confidence_threshold = settings.ai_confidence_threshold or DEFAULT_CONFIDENCE_THRESHOLD
+
+    # --- Step 0: Detect language ---
+    from app.services.multilingual import detect_language
+    detected_language = detect_language(request.message)
+    # Use provided language if it's more specific, otherwise use detected
+    language = request.language if request.language != "en" else detected_language
+
+    # Build system prompt with conversation history context
+    system_prompt = INTENT_CLASSIFICATION_PROMPT
+    if request.conversation_history:
+        history_text = "\n".join(
+            f"{msg.get('role', 'unknown')}: {msg.get('content', '')}"
+            for msg in request.conversation_history[-5:]  # Last 5 messages for context
+        )
+        system_prompt += f"\n\nRecent conversation context:\n{history_text}"
+
+    user_message = f"[{language}] {request.message}"
+
+    # --- Step 1: Try AI classification ---
+    ai_result = None
+    ai_available = True
+
+    if provider is None and settings.ai_api_key:
+        try:
+            provider = OpenAIProvider(
+                api_key=settings.ai_api_key,
+                model=getattr(settings, "ai_model", "gpt-4o-mini"),
+            )
+        except Exception as e:
+            logger.error("Failed to initialize AI provider: %s", str(e))
+            ai_available = False
+
+    if provider is not None:
+        try:
+            timeout = float(getattr(settings, "ai_timeout_seconds", 10))
+            raw_response = provider.classify(system_prompt, user_message, timeout=timeout)
+            ai_result = _parse_ai_response(raw_response)
+        except httpx.TimeoutException:
+            logger.warning("AI request timed out — falling back to rules")
+            ai_available = False
+        except httpx.HTTPStatusError as e:
+            logger.warning("AI API error (status=%d) — falling back to rules", e.response.status_code)
+            ai_available = False
+        except Exception as e:
+            logger.error("Unexpected AI error: %s — falling back to rules", str(e))
+            ai_available = False
+
+    # --- Step 2: Apply confidence threshold ---
+    if ai_result is not None:
+        elapsed_ms = (time.monotonic() - start_time) * 1000
+
+        if ai_result.confidence >= confidence_threshold:
+            return IntentDetectionResponse(
+                result=ai_result,
+                source="ai",
+                ai_available=True,
+                processing_time_ms=round(elapsed_ms, 2),
+            )
+        else:
+            # Below threshold — return UNCLEAR with the AI's reasoning
+            logger.info(
+                "AI confidence %.2f below threshold %.2f — returning UNCLEAR",
+                ai_result.confidence,
+                confidence_threshold,
+            )
+            return IntentDetectionResponse(
+                result=IntentDetectionResult(
+                    intent=CustomerIntent.UNCLEAR,
+                    confidence=ai_result.confidence,
+                    raw_response=ai_result.raw_response,
+                ),
+                source="threshold_fallback",
+                ai_available=True,
+                processing_time_ms=round(elapsed_ms, 2),
+            )
+
+    # --- Step 3: Deterministic fallback (language-aware) ---
+    logger.info("Using rule-based fallback for intent detection (language=%s)", language)
+    fallback_result = _rule_based_classify(request.message, language)
+    elapsed_ms = (time.monotonic() - start_time) * 1000
+
+    return IntentDetectionResponse(
+        result=fallback_result,
+        source="rule_based_fallback",
+        ai_available=ai_available,
+        processing_time_ms=round(elapsed_ms, 2),
+    )

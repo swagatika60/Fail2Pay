@@ -9,6 +9,8 @@ from app.schemas.installment import InstallmentCreate, InstallmentRead
 from app.schemas.invoice import InvoiceCreate, InvoiceRead
 from app.schemas.audit_event import AuditEventCreate, AuditEventRead
 from app.schemas.webhook_event import WebhookEventRead
+from app.schemas.scheduled_action import ScheduledActionCreate, ScheduledActionRead
+from app.schemas.policy import PolicyInput, PolicyAction, PolicyDecision
 
 __all__ = [
     "CustomerCreate", "CustomerRead",
@@ -22,4 +24,6 @@ __all__ = [
     "InvoiceCreate", "InvoiceRead",
     "AuditEventCreate", "AuditEventRead",
     "WebhookEventRead",
+    "ScheduledActionCreate", "ScheduledActionRead",
+    "PolicyInput", "PolicyAction", "PolicyDecision",
 ]
