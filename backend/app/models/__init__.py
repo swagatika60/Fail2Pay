@@ -11,6 +11,7 @@ from app.models.audit_event import AuditEvent
 from app.models.webhook_event import WebhookEvent
 from app.models.scheduled_action import ScheduledAction
 from app.models.email import SentEmail
+from app.models.promise import Promise
 
 __all__ = [
     "Customer",
@@ -26,4 +27,5 @@ __all__ = [
     "WebhookEvent",
     "ScheduledAction",
     "SentEmail",
+    "Promise",
 ]

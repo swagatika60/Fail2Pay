@@ -23,3 +23,5 @@ class Customer(Base):
     # relationships
     revenue_events = relationship("RevenueEvent", back_populates="customer")
     recovery_cases = relationship("RecoveryCase", back_populates="customer")
+    invoices = relationship("Invoice", back_populates="customer")
+    promises = relationship("Promise", back_populates="customer")

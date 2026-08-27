@@ -156,6 +156,7 @@ def process_single_action(db: Session, action: ScheduledAction) -> dict:
     """Process a single scheduled action with ALL pre-reminder checks.
 
     Checks performed BEFORE every reminder:
+    0. Centralized hard stop check (10 conditions)
     1. Case exists?
     2. Case in terminal state?
     3. Payment recovered?
@@ -167,6 +168,20 @@ def process_single_action(db: Session, action: ScheduledAction) -> dict:
     Returns:
         dict with action_id, result (executed/cancelled/skipped), and reason
     """
+    # --- Check 0: Centralized Hard Stop ---
+    from app.services.hard_stop import check_hard_stop
+    hard_stop = check_hard_stop(
+        db, action.recovery_case_id,
+        action_type=f"scheduled_{action.action_type}",
+    )
+    if hard_stop.blocked:
+        cancel_action(db, action.id, reason=f"hard_stop_{hard_stop.stop_condition}")
+        return {
+            "action_id": str(action.id),
+            "result": "cancelled",
+            "reason": f"hard_stop_{hard_stop.stop_condition}",
+        }
+
     case = get_recovery_case(db, action.recovery_case_id)
 
     # --- Check 1: Case exists ---
@@ -244,6 +259,14 @@ def process_single_action(db: Session, action: ScheduledAction) -> dict:
             "action_id": str(action.id),
             "result": "cancelled",
             "reason": "customer_responded",
+        }
+
+    # --- Check 8: Active promise exists (pause generic reminders) ---
+    if _check_active_promise(db, case):
+        return {
+            "action_id": str(action.id),
+            "result": "cancelled",
+            "reason": "active_promise_exists",
         }
 
     # --- All checks passed — execute the action ---
@@ -551,8 +574,21 @@ def _check_customer_responded(db: Session, case: RecoveryCase) -> bool:
     return inbound_after is not None
 
 
+def _check_active_promise(db: Session, case: RecoveryCase) -> bool:
+    """Check if there's an active promise for this case."""
+    from app.crud.promise import get_active_promise_for_case
+    promise = get_active_promise_for_case(db, case.id)
+    return promise is not None
+
+
 def _stop_case(db: Session, case: RecoveryCase, reason: str) -> None:
     """Stop a recovery case and cancel all pending actions."""
+    # Cancel any active promise
+    from app.crud.promise import get_active_promise_for_case, cancel_promise as cancel_promise_db
+    active_promise = get_active_promise_for_case(db, case.id)
+    if active_promise:
+        cancel_promise_db(db, active_promise.id, reason=f"case_stopped_{reason}")
+
     case.status = RecoveryStatus.STOPPED
     case.closed_at = datetime.now(timezone.utc)
     db.commit()

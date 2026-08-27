@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     email_api_key: str = ""
     email_from_address: str = "noreply@fail2pay.com"
     payment_link_base_url: str = "https://fail2pay.example.com"
+    promise_high_value_threshold_paise: int = 1_000_000  # ₹10,000
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

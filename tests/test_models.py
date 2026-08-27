@@ -322,6 +322,7 @@ class TestPaymentPlan:
         plan = PaymentPlan(
             recovery_case_id=case.id,
             total_amount=50000,
+            installment_amount=10000,
             number_of_installments=5,
             frequency="monthly",
         )
@@ -371,6 +372,7 @@ class TestInstallment:
         plan = PaymentPlan(
             recovery_case_id=case.id,
             total_amount=50000,
+            installment_amount=10000,
             number_of_installments=5,
             frequency="monthly",
         )
@@ -424,6 +426,7 @@ class TestInvoice:
         plan = PaymentPlan(
             recovery_case_id=case.id,
             total_amount=50000,
+            installment_amount=10000,
             number_of_installments=5,
             frequency="monthly",
         )
@@ -432,19 +435,21 @@ class TestInvoice:
 
         # create invoice
         invoice = Invoice(
-            payment_plan_id=plan.id,
+            recovery_case_id=case.id,
+            customer_id=customer.id,
             invoice_number="INV-001",
             amount=10000,
+            secure_token="test-token-123",
         )
         db_session.add(invoice)
         db_session.commit()
 
         assert invoice.id is not None
-        assert invoice.status == InvoiceStatus.PENDING
+        assert invoice.status == InvoiceStatus.PENDING.value
 
     def test_invoice_status_enum(self, db_session):
         for status in InvoiceStatus:
-            assert status.value in ["PENDING", "SENT", "PAID", "CANCELLED"]
+            assert status.value in ["PENDING", "SENT", "VIEWED", "PAID", "CANCELLED"]
 
 
 # ============ AuditEvent Tests ============
@@ -694,6 +699,7 @@ class TestRelationships:
         plan = PaymentPlan(
             recovery_case_id=case.id,
             total_amount=50000,
+            installment_amount=10000,
             number_of_installments=5,
             frequency="monthly",
         )
@@ -733,6 +739,7 @@ class TestRelationships:
         plan = PaymentPlan(
             recovery_case_id=case.id,
             total_amount=50000,
+            installment_amount=10000,
             number_of_installments=5,
             frequency="monthly",
         )
@@ -752,8 +759,8 @@ class TestRelationships:
         db_session.refresh(plan)
         assert len(plan.installments) == 5
 
-    def test_payment_plan_to_invoices(self, db_session):
-        # one payment plan has many invoices
+    def test_recovery_case_to_invoices(self, db_session):
+        # one recovery case has many invoices
         customer = Customer(external_id="cust_rel_8", email="rel8@test.com")
         db_session.add(customer)
         db_session.commit()
@@ -779,26 +786,19 @@ class TestRelationships:
         db_session.add(case)
         db_session.commit()
 
-        plan = PaymentPlan(
-            recovery_case_id=case.id,
-            total_amount=50000,
-            number_of_installments=5,
-            frequency="monthly",
-        )
-        db_session.add(plan)
-        db_session.commit()
-
         for i in range(3):
             invoice = Invoice(
-                payment_plan_id=plan.id,
+                recovery_case_id=case.id,
+                customer_id=customer.id,
                 invoice_number=f"INV-{i+1:03d}",
                 amount=10000,
+                secure_token=f"token-{i+1}",
             )
             db_session.add(invoice)
         db_session.commit()
 
-        db_session.refresh(plan)
-        assert len(plan.invoices) == 3
+        db_session.refresh(case)
+        assert len(case.invoices) == 3
 
     def test_recovery_case_to_audit_events(self, db_session):
         # one case has many audit events

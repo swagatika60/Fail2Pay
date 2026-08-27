@@ -241,6 +241,8 @@ def send_recovery_email(
     invoice_link: str = "",
     payment_plan_details: str = "",
     language: str = "en",
+    attachment_bytes: bytes | None = None,
+    attachment_filename: str | None = None,
 ) -> dict:
     """Send a recovery email with policy and opt-out checks.
 
@@ -274,6 +276,20 @@ def send_recovery_email(
 
     if not customer.email:
         return {"status": "error", "reason": "no_email_address"}
+
+    # --- Step 1.5: Hard Stop Check ---
+    from app.services.hard_stop import check_hard_stop
+    hard_stop = check_hard_stop(db, case_id, action_type="email_send")
+    if hard_stop.blocked:
+        logger.info(
+            "Email blocked by hard stop: case=%s, condition=%s",
+            case_id, hard_stop.stop_condition,
+        )
+        return {
+            "status": "blocked",
+            "reason": hard_stop.reason,
+            "stop_condition": hard_stop.stop_condition,
+        }
 
     # --- Step 2: Check opt-out ---
     if is_opted_out(db, case_id):
@@ -320,6 +336,8 @@ def send_recovery_email(
         to_email=customer.email,
         subject=rendered["subject"],
         body=rendered["body"],
+        attachment_bytes=attachment_bytes,
+        attachment_filename=attachment_filename,
     )
 
     # --- Step 7: Update record with result ---
@@ -360,6 +378,8 @@ def _send_via_provider(
     to_email: str,
     subject: str,
     body: str,
+    attachment_bytes: bytes | None = None,
+    attachment_filename: str | None = None,
 ) -> dict:
     """Send email via the configured provider.
 
@@ -375,25 +395,47 @@ def _send_via_provider(
 
     if not api_key:
         logger.warning("Email API key not configured — logging email only")
+        attachment_info = None
+        if attachment_bytes and attachment_filename:
+            attachment_info = {
+                "filename": attachment_filename,
+                "size_bytes": len(attachment_bytes),
+            }
         return {
             "status": "sent",
             "message_id": f"mock_{uuid.uuid4().hex[:8]}",
-            "provider_response": {"mock": True, "reason": "no_api_key"},
+            "provider_response": {
+                "mock": True,
+                "reason": "no_api_key",
+                "attachment": attachment_info,
+            },
         }
 
     # Send via HTTP API (generic — works with SendGrid, Mailgun, Resend, etc.)
     # The actual API endpoint and format depends on the provider.
     # This uses a generic REST format that most providers support.
     try:
+        # Build request body
+        request_body = {
+            "to": to_email,
+            "subject": subject,
+            "text": body,
+            "from": get_settings().email_from_address,
+        }
+
+        # Add attachment if provided (base64 encoded)
+        if attachment_bytes and attachment_filename:
+            import base64
+            request_body["attachments"] = [{
+                "filename": attachment_filename,
+                "content": base64.b64encode(attachment_bytes).decode("utf-8"),
+                "type": "application/pdf",
+            }]
+
         with httpx.Client(timeout=30.0) as client:
             response = client.post(
                 "https://api.emailprovider.com/v1/send",
-                json={
-                    "to": to_email,
-                    "subject": subject,
-                    "text": body,
-                    "from": "noreply@fail2pay.com",
-                },
+                json=request_body,
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",

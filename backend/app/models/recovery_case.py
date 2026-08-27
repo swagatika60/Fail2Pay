@@ -50,3 +50,5 @@ class RecoveryCase(Base):
     audit_events = relationship("AuditEvent", back_populates="recovery_case")
     scheduled_actions = relationship("ScheduledAction", back_populates="recovery_case")
     sent_emails = relationship("SentEmail", back_populates="recovery_case")
+    invoices = relationship("Invoice", back_populates="recovery_case")
+    promises = relationship("Promise", back_populates="recovery_case")

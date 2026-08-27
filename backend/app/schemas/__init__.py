@@ -10,6 +10,9 @@ from app.schemas.invoice import InvoiceCreate, InvoiceRead
 from app.schemas.audit_event import AuditEventCreate, AuditEventRead
 from app.schemas.webhook_event import WebhookEventRead
 from app.schemas.scheduled_action import ScheduledActionCreate, ScheduledActionRead
+from app.schemas.email import SentEmailCreate, SentEmailRead
+from app.schemas.invoice import InvoiceCreate, InvoiceRead, InvoiceAccessRequest, InvoiceAccessResponse
+from app.schemas.promise import PromiseCreate, PromiseRead
 from app.schemas.policy import PolicyInput, PolicyAction, PolicyDecision
 
 __all__ = [
@@ -25,5 +28,8 @@ __all__ = [
     "AuditEventCreate", "AuditEventRead",
     "WebhookEventRead",
     "ScheduledActionCreate", "ScheduledActionRead",
+    "SentEmailCreate", "SentEmailRead",
+    "InvoiceCreate", "InvoiceRead", "InvoiceAccessRequest", "InvoiceAccessResponse",
+    "PromiseCreate", "PromiseRead",
     "PolicyInput", "PolicyAction", "PolicyDecision",
 ]

@@ -105,6 +105,16 @@ def send_text_message(
     Returns:
         dict with status, message_id, and any error details
     """
+    # --- Step 0: Hard Stop Check ---
+    from app.services.hard_stop import check_hard_stop
+    hard_stop = check_hard_stop(db, recovery_case_id, action_type="whatsapp_send")
+    if hard_stop.blocked:
+        return {
+            "status": "blocked",
+            "reason": hard_stop.reason,
+            "stop_condition": hard_stop.stop_condition,
+        }
+
     # --- Step 1: Policy Engine Check ---
     # Build policy input from the recovery case
     from app.crud.recovery_case import get_recovery_case

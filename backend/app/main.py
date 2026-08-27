@@ -4,6 +4,7 @@ from app.routes.payments import router as payments_router
 from app.routes.webhooks import router as webhooks_router
 from app.routes.analytics import router as analytics_router
 from app.routes.whatsapp import router as whatsapp_router
+from app.routes.invoices import router as invoices_router
 
 app = FastAPI(title="Fail2Pay")
 
@@ -18,6 +19,9 @@ app.include_router(analytics_router)
 
 # include whatsapp routes
 app.include_router(whatsapp_router)
+
+# include invoice routes
+app.include_router(invoices_router)
 
 
 @app.get("/health")
