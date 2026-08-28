@@ -1,0 +1,30 @@
+# Version control
+.git
+.gitignore
+.github
+
+# Environment / secrets
+backend/.env
+**/.env
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+*.db
+
+# Node
+node_modules/
+dist/
+frontend/node_modules/
+
+# Container
+Dockerfile
+.dockerignore
+deploy/
+
+# Tests
+tests/

@@ -7,15 +7,16 @@ interface MetricCardProps {
   subtitle?: string
 }
 
-function formatCurrency(amount: number): string {
+export function formatCurrency(paise: number): string {
+  const rupees = Number(paise) / 100
   // Format as Indian currency (lakhs/crores)
-  if (amount >= 10000000) {
-    return `₹${(amount / 10000000).toFixed(2)} Cr`
+  if (rupees >= 10000000) {
+    return `₹${(rupees / 10000000).toFixed(2)} Cr`
   }
-  if (amount >= 100000) {
-    return `₹${(amount / 100000).toFixed(2)} L`
+  if (rupees >= 100000) {
+    return `₹${(rupees / 100000).toFixed(2)} L`
   }
-  return `₹${amount.toLocaleString("en-IN")}`
+  return `₹${Math.round(rupees).toLocaleString("en-IN")}`
 }
 
 export default function MetricCard({
@@ -34,5 +35,3 @@ export default function MetricCard({
     </div>
   )
 }
-
-export { formatCurrency }

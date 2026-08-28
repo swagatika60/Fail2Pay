@@ -8,6 +8,8 @@ class Settings(BaseSettings):
     razorpay_key_id: str = ""
     razorpay_key_secret: str = ""
     razorpay_webhook_secret: str = ""
+    # API Authentication
+    api_key: str = ""
     # AI Intent Detection settings
     ai_api_key: str = ""
     ai_model: str = "gpt-4o-mini"
@@ -23,6 +25,20 @@ class Settings(BaseSettings):
     promise_high_value_threshold_paise: int = 1_000_000  # ₹10,000
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    def validate_startup(self) -> list[str]:
+        """Check mandatory keys and return list of missing ones.
+
+        Called at startup to fail fast with a clear message.
+        """
+        missing = []
+        if not self.database_url:
+            missing.append("DATABASE_URL")
+        if not self.razorpay_key_id:
+            missing.append("RAZORPAY_KEY_ID")
+        if not self.razorpay_key_secret:
+            missing.append("RAZORPAY_KEY_SECRET")
+        return missing
 
 
 @lru_cache

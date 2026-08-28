@@ -101,6 +101,30 @@ def process_payment_failed(db: Session, payload: dict) -> dict:
         logger.info("Duplicate webhook event %s, skipping", event_id)
         return {"status": "skipped", "reason": "duplicate_webhook"}
 
+    # --- Step 1b: Installment correlation (recurring/EMI failure path) ---
+    # A failed payment for an installment (matched by razorpay order/payment id)
+    # is recorded against the installment plan — it does NOT spawn a new case.
+    from app.services.installment_workflow import record_installment_failure
+
+    installment = _find_installment_for_payment(db, payment_id, order_id)
+    if installment:
+        store_webhook_event(db, event_id, "payment.failed", payment_id)
+        failure_result = record_installment_failure(
+            db, installment.id, reason=failure_reason or "payment_failed"
+        )
+        logger.info(
+            "Installment payment failed: installment=%s, case=%s",
+            installment.id,
+            installment.recovery_case_id,
+        )
+        return {
+            "case_id": str(installment.recovery_case_id),
+            "payment_id": payment_id,
+            "installment_failure": True,
+            **failure_result,
+            "status": "processed",
+        }
+
     # Check if revenue event already exists for this payment
     existing_events = get_revenue_events_by_customer(
         db,
@@ -136,19 +160,41 @@ def process_payment_failed(db: Session, payload: dict) -> dict:
         ),
     )
 
-    # --- Step 3 & 4: Create RecoveryCase ---
+    # --- Step 3: Assess risk via Revenue Risk Engine ---
     from app.crud.recovery_case import create_recovery_case
+    from app.services.revenue_risk import assess_and_log_risk, assess_risk
 
+    assessment = assess_risk(
+        db=db,
+        customer_id=str(customer_id),
+        revenue_event_id=str(revenue_event.id),
+        event_type="payment_failed",
+        amount=amount,
+        extra_data={
+            "order_id": order_id,
+            "method": method,
+            "failure_reason": failure_reason,
+            "failure_code": failure_code,
+        },
+    )
+
+    # --- Step 3b: Read merchant recovery policy ---
+    from app.services.recovery_settings import get_or_create
+
+    merchant_settings = get_or_create(db)
+    max_attempts = merchant_settings.max_recovery_attempts
+
+    # --- Step 4: Create RecoveryCase ---
     recovery_case = create_recovery_case(
         db,
         data=RecoveryCaseCreate(
             customer_id=customer_id,
             revenue_event_id=revenue_event.id,
-            risk_level="high",
-            risk_reason=f"Payment failed: {failure_reason}",
+            risk_level=assessment.risk_level,
+            risk_reason=assessment.risk_reason,
             original_amount=amount,
             remaining_amount=amount,
-            max_attempts=5,
+            max_attempts=max_attempts,
         ),
     )
 
@@ -175,6 +221,22 @@ def process_payment_failed(db: Session, payload: dict) -> dict:
             },
             extra_data={"webhook_event_id": event_id, "payment_id": payment_id},
         ),
+    )
+
+    # --- Step 7b: Log the risk decision to the audit trail ---
+    assess_and_log_risk(
+        db=db,
+        recovery_case_id=str(recovery_case.id),
+        customer_id=str(customer_id),
+        revenue_event_id=str(revenue_event.id),
+        event_type="payment_failed",
+        amount=amount,
+        extra_data={
+            "order_id": order_id,
+            "method": method,
+            "failure_reason": failure_reason,
+            "failure_code": failure_code,
+        },
     )
 
     logger.info(
@@ -223,13 +285,49 @@ def process_payment_captured(db: Session, payload: dict) -> dict:
     payment = payload.get("payload", {}).get("payment", {}).get("entity", {})
 
     payment_id = payment.get("id", "")
+    order_id = payment.get("order_id", "")
     amount = payment.get("amount", 0)
     status = payment.get("status", "captured")
+    method = payment.get("method", "")
 
     # --- Step 1: Idempotency check ---
     if is_duplicate_webhook(db, event_id):
         logger.info("Duplicate webhook event %s, skipping", event_id)
         return {"status": "skipped", "reason": "duplicate_webhook"}
+
+    # --- Step 1b: Installment correlation (recurring/EMI captured path) ---
+    # A captured payment for an installment is recorded against the payment
+    # plan (marking the installment PAID and the plan one step closer to
+    # COMPLETED) instead of inflating the original case's partial recovery.
+    from app.services.installment_workflow import record_installment_payment
+
+    installment = _find_installment_for_payment(db, payment_id, order_id)
+    if installment:
+        store_webhook_event(db, event_id, "payment.captured", payment_id)
+        payment_result = record_installment_payment(
+            db, installment.id, amount, razorpay_payment_id=payment_id
+        )
+        _record_verified_payment(
+            db=db,
+            recovery_case_id=installment.recovery_case_id,
+            payment_id=payment_id,
+            order_id=order_id,
+            amount=amount,
+            method=method,
+            extra_data={"source": "razorpay_webhook", "channel": "payment_plan"},
+        )
+        logger.info(
+            "Installment payment captured: installment=%s, case=%s",
+            installment.id,
+            installment.recovery_case_id,
+        )
+        return {
+            "case_id": str(installment.recovery_case_id),
+            "payment_id": payment_id,
+            "installment_payment": True,
+            **payment_result,
+            "status": "processed",
+        }
 
     # Find the revenue event for this payment
     from sqlalchemy import select
@@ -278,6 +376,19 @@ def process_payment_captured(db: Session, payload: dict) -> dict:
         0, target_case.original_amount - target_case.recovered_amount
     )
 
+    # --- Step 4b: Record the VERIFIED payment ---
+    # Only "captured" webhooks create Payment rows — the ground truth for the
+    # Revenue Map. A customer message is never treated as money.
+    _record_verified_payment(
+        db=db,
+        recovery_case_id=target_case.id,
+        payment_id=payment_id,
+        order_id=order_id,
+        amount=amount,
+        method=method,
+        extra_data={"source": "razorpay_webhook"},
+    )
+
     # --- Step 5 & 6: Mark RECOVERED if fully paid ---
     old_status = target_case.status
     if target_case.remaining_amount <= 0:
@@ -285,6 +396,13 @@ def process_payment_captured(db: Session, payload: dict) -> dict:
         from datetime import datetime, timezone
 
         target_case.closed_at = datetime.now(timezone.utc)
+
+        # HARD STOP: cancel any future scheduled recovery actions
+        from app.crud.scheduled_action import cancel_pending_actions_for_case
+
+        cancel_pending_actions_for_case(
+            db, target_case.id, reason="recovered_payment_captured"
+        )
         logger.info(
             "Recovery case %s fully recovered (amount: %d)",
             target_case.id,
@@ -351,3 +469,84 @@ def _get_or_create_customer_id(
         ),
     )
     return customer.id
+
+
+def _find_installment_for_payment(
+    db: Session, payment_id: str, order_id: str = ""
+):
+    """Correlate a webhook payment to an installment (EMI/recurring path).
+
+    Matches on the installment's stored Razorpay payment id first (available
+    on capture), falling back to the Razorpay order id (available on failure).
+
+    Returns:
+        Installment row if matched, else None
+    """
+    from sqlalchemy import select
+
+    from app.models.installment import Installment
+
+    if payment_id:
+        installment = db.execute(
+            select(Installment).where(Installment.razorpay_payment_id == payment_id)
+        ).scalar_one_or_none()
+        if installment:
+            return installment
+
+    if order_id:
+        installment = db.execute(
+            select(Installment).where(Installment.razorpay_order_id == order_id)
+        ).scalar_one_or_none()
+        if installment:
+            return installment
+
+    return None
+
+
+def _record_verified_payment(
+    db: Session,
+    recovery_case_id,
+    payment_id: str,
+    order_id: str,
+    amount: int,
+    method: str,
+    extra_data: dict | None = None,
+):
+    """Create a ``Payment`` row for a verified captured webhook payment.
+
+    This is the only place real money is recorded into the Revenue Map.
+    The ``razorpay_payment_id`` is unique — duplicates are skipped silently.
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from app.models.payment import Payment
+
+    existing = db.execute(
+        select(Payment).where(Payment.razorpay_payment_id == payment_id)
+    ).scalar_one_or_none()
+    if existing:
+        return existing
+
+    payment = Payment(
+        recovery_case_id=recovery_case_id,
+        razorpay_payment_id=payment_id,
+        razorpay_order_id=order_id or None,
+        amount=amount,
+        currency="INR",
+        status="captured",
+        method=method or None,
+        paid_at=datetime.now(timezone.utc),
+        extra_data=extra_data or {"source": "razorpay_webhook"},
+    )
+    db.add(payment)
+    db.commit()
+    db.refresh(payment)
+    logger.info(
+        "Verified payment recorded: payment=%s, case=%s, amount=%d",
+        payment_id,
+        recovery_case_id,
+        amount,
+    )
+    return payment

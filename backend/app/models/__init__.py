@@ -12,6 +12,8 @@ from app.models.webhook_event import WebhookEvent
 from app.models.scheduled_action import ScheduledAction
 from app.models.email import SentEmail
 from app.models.promise import Promise
+from app.models.payment import Payment
+from app.models.recovery_setting import RecoverySetting
 
 __all__ = [
     "Customer",
@@ -28,4 +30,6 @@ __all__ = [
     "ScheduledAction",
     "SentEmail",
     "Promise",
+    "Payment",
+    "RecoverySetting",
 ]

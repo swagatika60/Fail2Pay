@@ -9,3 +9,9 @@ def test_health():
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "service": "Fail2Pay"}
+
+
+def test_api_health():
+    response = client.get("/api/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "service": "Fail2Pay"}

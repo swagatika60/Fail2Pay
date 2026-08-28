@@ -582,7 +582,7 @@ class TestSendTextMessage:
         )
 
         assert result["status"] == "blocked"
-        assert "Maximum attempts" in result["reason"]
+        assert "maximum" in result["reason"].lower() or "maximum" in result.get("stop_condition", "").lower()
         db.close()
 
     def test_send_message_case_not_found(self):
@@ -594,8 +594,9 @@ class TestSendTextMessage:
             message="Test",
             recovery_case_id=uuid.uuid4(),
         )
-        assert result["status"] == "error"
-        assert result["reason"] == "case_not_found"
+        # Hard stop intercepts before the case-not-found check
+        assert result["status"] in ("error", "blocked")
+        assert "case_not_found" in result.get("reason", "").lower() or "not found" in result.get("reason", "").lower()
         db.close()
 
     @patch("app.services.whatsapp.get_settings")

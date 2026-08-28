@@ -25,6 +25,84 @@ class RevenueSummary(BaseModel):
     recovery_rate: float  # recovered / at_risk, 0.0 if no at_risk
 
 
+class FunnelStage(BaseModel):
+    """One stage of the revenue funnel (real amounts, clearly labelled)."""
+
+    name: str
+    amount: int
+    tooltip: str = ""
+
+
+class ChannelSlice(BaseModel):
+    channel: str
+    name: str
+    amount: int
+    count: int
+
+
+class RiskLevelSlice(BaseModel):
+    risk_level: str
+    amount: int
+    count: int
+
+
+class LanguageSlice(BaseModel):
+    language: str
+    name: str
+    amount: int
+    count: int
+
+
+class TimelinePoint(BaseModel):
+    label: str
+    recovered: int
+    cumulative: int
+
+
+class PaymentPlanRecovery(BaseModel):
+    plans_count: int
+    total_amount: int
+    recovered_amount: int
+    remaining_amount: int
+    recovery_rate: float
+
+
+class PromiseToPayRecovery(BaseModel):
+    promised_cases: int
+    promised_amount: int
+    recovered_amount: int
+    outstanding_amount: int
+    recovery_rate: float
+
+
+class RevenueMap(BaseModel):
+    """Full Revenue Map analytics — verified money only.
+
+    ``recovered_revenue`` is the sum of captured (verified) payments.
+    ``attempted_recovery`` is the pool money recovery engaged, shown
+    separately from verified recovered revenue.
+    """
+
+    total_revenue: int
+    at_risk_revenue: int
+    recovered_revenue: int
+    lost_revenue: int
+    recovery_rate: float
+    avg_recovery_time_days: float
+    avg_attempts_before_recovery: float
+    attempted_recovery: int
+    attempted_unfulfilled: int
+    payments_count: int
+    cases_count: int
+    funnel: list[FunnelStage] = []
+    recovery_by_channel: list[ChannelSlice] = []
+    recovery_by_risk_level: list[RiskLevelSlice] = []
+    recovery_by_language: list[LanguageSlice] = []
+    payment_plan_recovery: PaymentPlanRecovery
+    promise_to_pay_recovery: PromiseToPayRecovery
+    recovery_timeline: list[TimelinePoint] = []
+
+
 class RecoveryCaseSummary(BaseModel):
     """Summary of a recovery case for the table."""
 

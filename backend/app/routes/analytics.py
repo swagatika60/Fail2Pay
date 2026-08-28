@@ -19,6 +19,7 @@ from app.models.revenue_event import RevenueEvent
 from app.schemas.analytics import (
     RecoveryCaseDetail,
     RecoveryCaseSummary,
+    RevenueMap,
     RevenueSummary,
 )
 
@@ -36,105 +37,117 @@ def get_revenue_summary(db: Session = Depends(get_db)):
     return _compute_summary(db)
 
 
+@router.get("/revenue-map", response_model=RevenueMap)
+def get_revenue_map(db: Session = Depends(get_db)):
+    """Full Revenue Map analytics: funnel, recovery by channel/risk/language,
+    payment-plan & promise-to-pay recovery, and a recovery timeline.
+
+    Money is only counted from VERIFIED captured payments; attempted
+    recovery is reported separately and never confused with revenue.
+    """
+    from app.services.revenue_map import compute_revenue_map
+
+    return compute_revenue_map(db)
+
+
 @router.get("/recovery-cases", response_model=list[RecoveryCaseSummary])
 def list_recovery_cases(db: Session = Depends(get_db)):
     """List all recovery cases for the dashboard table."""
-    try:
-        cases = (
-            db.query(RecoveryCase)
-            .order_by(RecoveryCase.created_at.desc())
-            .all()
+    cases = (
+        db.query(RecoveryCase)
+        .order_by(RecoveryCase.created_at.desc())
+        .all()
+    )
+
+    if not cases:
+        return []
+
+    customer_ids = {case.customer_id for case in cases}
+    customers = db.query(Customer).filter(Customer.id.in_(customer_ids)).all()
+    customer_map = {c.id: c for c in customers}
+
+    return [
+        RecoveryCaseSummary(
+            id=case.id,
+            customer_name=customer_map[case.customer_id].name if case.customer_id in customer_map else None,
+            customer_email=customer_map[case.customer_id].email if case.customer_id in customer_map else None,
+            original_amount=case.original_amount,
+            risk_level=case.risk_level,
+            status=case.status.value if hasattr(case.status, "value") else case.status,
+            recovered_amount=case.recovered_amount,
+            remaining_amount=case.remaining_amount,
+            attempt_count=case.attempt_count,
+            created_at=case.created_at,
+            updated_at=case.updated_at,
         )
-        result = []
-        for case in cases:
-            customer = db.query(Customer).filter(Customer.id == case.customer_id).first()
-            result.append(
-                RecoveryCaseSummary(
-                    id=case.id,
-                    customer_name=customer.name if customer else None,
-                    customer_email=customer.email if customer else None,
-                    original_amount=case.original_amount,
-                    risk_level=case.risk_level,
-                    status=case.status.value if hasattr(case.status, "value") else case.status,
-                    recovered_amount=case.recovered_amount,
-                    remaining_amount=case.remaining_amount,
-                    attempt_count=case.attempt_count,
-                    created_at=case.created_at,
-                    updated_at=case.updated_at,
-                )
-            )
-        return result
-    finally:
-        pass
+        for case in cases
+    ]
 
 
 @router.get("/recovery-cases/{case_id}", response_model=RecoveryCaseDetail)
 def get_recovery_case_detail(case_id: UUID, db: Session = Depends(get_db)):
     """Get full details of a specific recovery case."""
-    try:
-        case = db.query(RecoveryCase).filter(RecoveryCase.id == case_id).first()
-        if not case:
-            raise HTTPException(status_code=404, detail="Recovery case not found")
+    case = db.query(RecoveryCase).filter(RecoveryCase.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Recovery case not found")
 
-        customer = db.query(Customer).filter(Customer.id == case.customer_id).first()
-        revenue_event = (
-            db.query(RevenueEvent)
-            .filter(RevenueEvent.id == case.revenue_event_id)
-            .first()
-        )
+    customer = db.query(Customer).filter(Customer.id == case.customer_id).first()
+    revenue_event = (
+        db.query(RevenueEvent)
+        .filter(RevenueEvent.id == case.revenue_event_id)
+        .first()
+    )
 
-        # Get audit events for this case
-        audit_events_raw = (
-            db.query(AuditEvent)
-            .filter(AuditEvent.recovery_case_id == case.id)
-            .order_by(AuditEvent.created_at.desc())
-            .all()
-        )
-        audit_events = [
-            {
-                "id": str(ae.id),
-                "action": ae.action,
-                "entity_type": ae.entity_type,
-                "old_value": ae.old_value,
-                "new_value": ae.new_value,
-                "created_at": ae.created_at.isoformat() if ae.created_at else None,
-            }
-            for ae in audit_events_raw
-        ]
+    # Get audit events for this case
+    audit_events_raw = (
+        db.query(AuditEvent)
+        .filter(AuditEvent.recovery_case_id == case.id)
+        .order_by(AuditEvent.created_at.desc())
+        .all()
+    )
+    audit_events = [
+        {
+            "id": str(ae.id),
+            "action": ae.action,
+            "entity_type": ae.entity_type,
+            "old_value": ae.old_value,
+            "new_value": ae.new_value,
+            "created_at": ae.created_at.isoformat() if ae.created_at else None,
+        }
+        for ae in audit_events_raw
+    ]
 
-        # Extract failure reason from revenue event metadata
-        failure_reason = None
-        if revenue_event and revenue_event.extra_data:
-            failure_reason = revenue_event.extra_data.get("failure_reason")
+    # Extract failure reason from revenue event metadata
+    failure_reason = None
+    if revenue_event and revenue_event.extra_data:
+        failure_reason = revenue_event.extra_data.get("failure_reason")
 
-        return RecoveryCaseDetail(
-            id=case.id,
-            customer_id=case.customer_id,
-            customer_name=customer.name if customer else None,
-            customer_email=customer.email if customer else None,
-            customer_phone=customer.phone if customer else None,
-            revenue_event_id=case.revenue_event_id,
-            risk_level=case.risk_level,
-            risk_reason=case.risk_reason,
-            status=case.status.value if hasattr(case.status, "value") else case.status,
-            original_amount=case.original_amount,
-            recovered_amount=case.recovered_amount,
-            remaining_amount=case.remaining_amount,
-            attempt_count=case.attempt_count,
-            max_attempts=case.max_attempts,
-            recovery_started_at=case.recovery_started_at,
-            recovery_deadline=case.recovery_deadline,
-            closed_at=case.closed_at,
-            created_at=case.created_at,
-            updated_at=case.updated_at,
-            event_type=revenue_event.event_type if revenue_event else None,
-            source=revenue_event.source if revenue_event else None,
-            currency=revenue_event.currency if revenue_event else "INR",
-            failure_reason=failure_reason,
-            audit_events=audit_events,
-        )
-    finally:
-        pass
+    return RecoveryCaseDetail(
+        id=case.id,
+        customer_id=case.customer_id,
+        customer_name=customer.name if customer else None,
+        customer_email=customer.email if customer else None,
+        customer_phone=customer.phone if customer else None,
+        revenue_event_id=case.revenue_event_id,
+        risk_level=case.risk_level,
+        risk_reason=case.risk_reason,
+        status=case.status.value if hasattr(case.status, "value") else case.status,
+        original_amount=case.original_amount,
+        recovered_amount=case.recovered_amount,
+        remaining_amount=case.remaining_amount,
+        attempt_count=case.attempt_count,
+        max_attempts=case.max_attempts,
+        recovery_started_at=case.recovery_started_at,
+        recovery_deadline=case.recovery_deadline,
+        closed_at=case.closed_at,
+        created_at=case.created_at,
+        updated_at=case.updated_at,
+        event_type=revenue_event.event_type if revenue_event else None,
+        source=revenue_event.source if revenue_event else None,
+        currency=revenue_event.currency if revenue_event else "INR",
+        failure_reason=failure_reason,
+        audit_events=audit_events,
+    )
 
 
 def _compute_summary(db: Session) -> RevenueSummary:

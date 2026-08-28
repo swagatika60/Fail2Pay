@@ -226,9 +226,9 @@ class TestPaymentFailedWebhook:
         assert case.original_amount == 50000
         assert case.remaining_amount == 50000
         assert case.recovered_amount == 0
-        assert case.risk_level == "high"
+        assert case.risk_level == "LOW"
         assert case.max_attempts == 5
-        assert "Payment failed" in case.risk_reason
+        assert "low-value transaction" in case.risk_reason
         db.close()
 
     @patch("app.routes.webhooks.verify_webhook_signature")
@@ -255,6 +255,17 @@ class TestPaymentFailedWebhook:
         assert audit.entity_type == "recovery_case"
         assert audit.new_value["status"] == "AT_RISK"
         assert audit.new_value["original_amount"] == 50000
+
+        risk_audits = (
+            db.query(AuditEvent)
+            .filter(
+                AuditEvent.recovery_case_id == uuid.UUID(case_id),
+                AuditEvent.action == "risk_assessed",
+            )
+            .all()
+        )
+        assert risk_audits, "risk_assessed audit event should exist (risk engine logged)"
+        assert risk_audits[0].new_value["risk_level"] == "LOW"
         db.close()
 
     @patch("app.routes.webhooks.verify_webhook_signature")

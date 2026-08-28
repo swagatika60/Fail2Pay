@@ -304,14 +304,13 @@ def _schedule_next_action(db: Session, case: RecoveryCase) -> dict:
 
     template_stage = get_template_for_attempt(next_attempt)
 
-    # Calculate delay (exponential backoff)
-    delays = {
-        "initial_payment_failed": 4,    # 4 hours
-        "reminder_1": 8,                # 8 hours
-        "reminder_2": 16,               # 16 hours
-        "final_notice": 32,             # 32 hours
-    }
-    delay_hours = delays.get(template_stage, 8)
+    # Calculate delay — merchant RecoverySetting sequence with exponential fallback
+    from app.services.recovery_settings import get_or_create
+
+    reminder_sequence = (get_or_create(db).default_reminder_sequence) or [4, 8, 16, 32]
+    template_order = ["initial_payment_failed", "reminder_1", "reminder_2", "final_notice"]
+    seq_index = template_order.index(template_stage) if template_stage in template_order else 1
+    delay_hours = reminder_sequence[min(seq_index, len(reminder_sequence) - 1)] if reminder_sequence else 8
 
     # Create the scheduled action
     from app.crud.scheduled_action import create_scheduled_action

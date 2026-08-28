@@ -10,7 +10,7 @@ Fail2Pay is an autonomous revenue recovery platform that detects revenue at risk
 
 **Database:** PostgreSQL
 
-**Future integrations:** Razorpay (test mode + webhooks), WhatsApp Cloud API, Email, AI API — none of these are implemented yet.
+**Integrations:** Razorpay (test mode + idempotent webhooks), WhatsApp Cloud API, Email (SmTP, recoverable dispatches), AI intent detection, automated recovery workflows with policy engine, scheduling, hard stops, and audit logging.
 
 ## Project Structure
 
@@ -43,9 +43,14 @@ fail2pay/
 ### Backend
 
 - ✅ FastAPI app with health check endpoint (`GET /health`)
-- ✅ 10 SQLAlchemy models (Customer, RevenueEvent, RecoveryCase, etc.)
+- ✅ 14 SQLAlchemy models (Customer, RevenueEvent, RecoveryCase, etc.)
 - ✅ Pydantic schemas for all models
-- ✅ CRUD functions for Customer, RevenueEvent, RecoveryCase
+- ✅ CRUD functions for all entities
+- ✅ Razorpay test-mode orders + idempotent webhook handler
+- ✅ WhatsApp Cloud API client (message send/receive)
+- ✅ Email delivery service (dispatches, receipts, retries)
+- ✅ Recovery orchestrator: policy engine, intent detection, promise lifecycle, installment workflows, hard stops
+- ✅ Scheduler background engine, simulation routes, audit logging
 - ✅ Database initialization support
 - ✅ Environment variable configuration
 
@@ -53,12 +58,15 @@ fail2pay/
 
 - ✅ React app with Tailwind CSS
 - ✅ Backend status indicator (Connected/Offline)
+- ✅ Revenue dashboard with metrics, revenue-flow chart, recovery table
+- ✅ Case detail page (timeline, promises, payment plans, conversations, emails, hard stops)
+- ✅ Recovery simulation page
 - ✅ Health check service
 - ✅ TypeScript throughout
 
 ### Tests
 
-- ✅ 26 tests passing (health check + model tests + relationship tests)
+- ✅ 902 tests passing across 29 test files (health, models, payments, webhooks, WhatsApp, email, PDF invoices, recovery workflow, batch simulation, revenue map, recovery settings, resilience)
 
 ## Database Models
 
@@ -74,6 +82,10 @@ fail2pay/
 | **Installment** | Payment installments |
 | **Invoice** | Invoices for payments |
 | **AuditEvent** | Audit trail for all changes |
+| **WebhookEvent** | Incoming webhook event log |
+| **ScheduledAction** | Scheduled recovery actions |
+| **SentEmail** | Outbound email records |
+| **Promise** | Payment promises / intent to pay |
 
 ## Local Setup
 
@@ -142,8 +154,10 @@ EMAIL_API_KEY=
 
 - ✅ Project structure complete
 - ✅ Backend health check working
-- ✅ Frontend displaying status
+- ✅ Frontend building and linting clean
 - ✅ Database models and schemas ready
-- ✅ All tests passing
+- ✅ Razorpay, WhatsApp, Email integrations wired
+- ✅ Automated recovery workflows (orchestrator, policy engine, scheduler)
+- ✅ All 902 tests passing
 
-**Next steps:** Razorpay integration, WhatsApp/Email, AI features, recovery logic, dashboard.
+**Next steps:** live channel credentials (Razorpay/WhatsApp/Email), PostgreSQL persistence, AI risk-scoring volumes, production deployment.

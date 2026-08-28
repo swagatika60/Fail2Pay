@@ -2,6 +2,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+import app.models  # noqa: F401  # register all models on Base.metadata
 from app.database import Base
 
 

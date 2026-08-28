@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import String, Integer, DateTime, ForeignKey, Enum, func
+from sqlalchemy import String, Integer, DateTime, ForeignKey, Enum, JSON, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -38,6 +38,7 @@ class RecoveryCase(Base):
     recovery_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     recovery_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    extra_data: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -52,3 +53,4 @@ class RecoveryCase(Base):
     sent_emails = relationship("SentEmail", back_populates="recovery_case")
     invoices = relationship("Invoice", back_populates="recovery_case")
     promises = relationship("Promise", back_populates="recovery_case")
+    payments = relationship("Payment", back_populates="recovery_case")

@@ -507,20 +507,24 @@ def _process_inbound_text(
         return result
 
     # --- Step 6: Execute bounded action ---
-    _execute_intent_action(
-        db=db,
-        case=case,
-        action=action,
-        conversation=conversation,
-        customer=customer,
-        from_phone=from_phone,
-        payment_link=payment_link,
-        invoice_link=invoice_link,
+    overrides = (
+        _execute_intent_action(
+            db=db,
+            case=case,
+            action=action,
+            conversation=conversation,
+            customer=customer,
+            from_phone=from_phone,
+            payment_link=payment_link,
+            invoice_link=invoice_link,
+            customer_message=content,
+        )
+        or {}
     )
     result["action_taken"] = action.action_type
 
     # --- Step 7: Update case status if needed ---
-    if action.update_case_status:
+    if action.update_case_status and not overrides.get("skip_status_update"):
         from app.models.recovery_case import RecoveryStatus
         new_status = RecoveryStatus(action.update_case_status)
         case.status = new_status
@@ -542,8 +546,8 @@ def _process_inbound_text(
         action=action,
         customer_name=customer.name if customer else "Customer",
         amount_paise=case.original_amount,
-        payment_link=payment_link,
-        invoice_link=invoice_link,
+        payment_link=overrides.get("payment_link", payment_link),
+        invoice_link=overrides.get("invoice_link", invoice_link),
     )
 
     send_result = _send_reply(
@@ -616,14 +620,18 @@ def _execute_intent_action(
     from_phone: str,
     payment_link: str,
     invoice_link: str,
-) -> None:
+    customer_message: str | None = None,
+) -> dict:
     """Execute a bounded intent action.
 
     This function only does what the action_type specifies.
     No arbitrary commands, no AI-generated code execution.
+
+    It may create real domain resources (promise, payment plan, invoice)
+    and returns a dict of *overrides* that the caller applies to the
+    generic flow (e.g. skip the status re-update, use a real invoice URL).
     """
-    # All actions are handled by the response template + state updates
-    # This function handles any additional logic needed per action type
+    overrides: dict = {}
 
     if action.action_type == "check_payment_status":
         # For ALREADY_PAID: we could check Razorpay here
@@ -634,18 +642,68 @@ def _execute_intent_action(
         )
 
     elif action.action_type == "record_promise":
-        # For PROMISE_TO_PAY: already handled by update_case_status
-        logger.info(
-            "Customer promised to pay for case %s — status updated to PROMISED",
-            case.id,
-        )
+        # For PROMISE_TO_PAY: persist a real Promise record
+        from app.services.recovery_settings import get_or_create
+        from app.services.promise import create_promise_for_case
+
+        merchant_settings = get_or_create(db)
+        if merchant_settings.promise_to_pay_enabled:
+            promise_result = create_promise_for_case(
+                db, case.id, customer_message=customer_message
+            )
+            logger.info(
+                "Promise recorded for case %s: %s",
+                case.id,
+                promise_result.get("status"),
+            )
+            # create_promise_for_case already transitions the case to PROMISED
+            overrides["skip_status_update"] = True
 
     elif action.action_type == "propose_payment_plan":
-        # For PAYMENT_PLAN_REQUEST: log for follow-up
-        logger.info(
-            "Customer requested payment plan for case %s — flagged for plan proposal",
-            case.id,
+        # For PAYMENT_PLAN_REQUEST: create AND accept a real payment plan
+        from app.services.payment_plan import (
+            accept_payment_plan,
+            calculate_plan_options,
+            create_payment_plan_for_case,
         )
+        from app.services.recovery_settings import get_or_create
+
+        merchant_settings = get_or_create(db)
+        if merchant_settings.payment_plan_enabled:
+            options = calculate_plan_options(case.original_amount, frequency="weekly")
+            if options:
+                # Prefer the gentler option (most installments) that still maps
+                # back to a valid installment count under the merchant policy —
+                # the service computes the count as ceil(amount / installment),
+                # which can round UP by one over the "raw" option count.
+                import math
+
+                chosen = options[0]
+                for option in reversed(options):
+                    final_count = math.ceil(
+                        case.original_amount / option["installment_amount"]
+                    )
+                    if final_count <= merchant_settings.max_installments:
+                        chosen = option
+                        break
+                plan_result = create_payment_plan_for_case(
+                    db,
+                    case.id,
+                    installment_amount=chosen["installment_amount"],
+                    frequency="weekly",
+                    customer_message=customer_message,
+                )
+                if plan_result.get("status") == "created":
+                    import uuid as _uuid
+
+                    accept_payment_plan(db, case.id, _uuid.UUID(plan_result["plan_id"]))
+                logger.info(
+                    "Payment plan for case %s: %s",
+                    case.id,
+                    plan_result.get("status"),
+                )
+                # create_payment_plan_for_case transitions the case to PROMISED
+                overrides["skip_status_update"] = True
 
     elif action.action_type == "stop_recovery":
         # For STOP_REQUEST: already handled by update_case_status + cancel_scheduled_actions
@@ -661,6 +719,21 @@ def _execute_intent_action(
             case.id,
         )
 
+    elif action.action_type == "send_invoice":
+        # For INVOICE_REQUEST: create a REAL invoice with a secure access token
+        # and send its URL in the reply (not a placeholder link).
+        from app.services.invoice import create_recovery_invoice
+
+        invoice_result = create_recovery_invoice(db, case.id)
+        if invoice_result.get("status") == "created":
+            overrides["invoice_link"] = invoice_result["secure_url"]
+        logger.info(
+            "Invoice for case %s: %s",
+            case.id,
+            invoice_result.get("status"),
+        )
+
+    return overrides
 
 
 def _send_reply(
