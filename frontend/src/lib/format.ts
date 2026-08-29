@@ -1,6 +1,5 @@
 export function formatINR(paise: number): string {
   const rupees = Number(paise) / 100
-  if (rupees >= 10000000) return `₹${(rupees / 10000000).toFixed(2)} Cr`
   if (rupees >= 100000) return `₹${(rupees / 100000).toFixed(2)} L`
   if (rupees >= 1000) return `₹${(rupees / 1000).toFixed(1)} K`
   return `₹${Math.round(rupees).toLocaleString("en-IN")}`

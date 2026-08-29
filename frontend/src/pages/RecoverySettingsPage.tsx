@@ -186,7 +186,7 @@ export default function RecoverySettingsPage() {
         </div>
         <div className="flex gap-2">
           <Link
-            to="/"
+            to="/dashboard"
             className="rounded-lg bg-slate-800 px-4 py-2 text-sm text-slate-300 hover:bg-slate-700"
           >
             Dashboard

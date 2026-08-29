@@ -6,7 +6,7 @@ All data is clearly marked as DEMO_SIMULATION.
 
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -23,10 +23,18 @@ def run_simulation(db: Session = Depends(get_db)):
     Creates demo data marked as DEMO_SIMULATION.
     Returns simulation results and analytics.
     """
-    from app.services.simulation import run_simulation
+    from app.services.simulation import run_simulation as _run_batch
 
-    results = run_simulation(db)
-    return results
+    try:
+        results = _run_batch(db)
+        return results
+    except Exception as e:
+        logger.error("Simulation failed: %s", e, exc_info=True)
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Simulation failed: {e}",
+        ) from e
 
 
 @router.get("/analytics")
@@ -68,9 +76,14 @@ def reset_simulation_data(db: Session = Depends(get_db)):
     from app.models.conversation import Conversation
     from app.models.conversation_message import ConversationMessage
     from app.models.audit_event import AuditEvent
+    from app.models.email import SentEmail
+    from app.models.invoice import Invoice
     from app.models.payment import Payment
     from app.models.payment_plan import PaymentPlan
+    from app.models.promise import Promise
     from app.models.installment import Installment
+    from app.models.recovery_attempt import RecoveryAttempt
+    from app.models.scheduled_action import ScheduledAction
     from sqlalchemy import delete, select
 
     # Find demo customers
@@ -104,6 +117,11 @@ def reset_simulation_data(db: Session = Depends(get_db)):
             )
         ),
         delete(Conversation).where(Conversation.recovery_case_id.in_(demo_case_ids)),
+        delete(RecoveryAttempt).where(RecoveryAttempt.recovery_case_id.in_(demo_case_ids)),
+        delete(SentEmail).where(SentEmail.recovery_case_id.in_(demo_case_ids)),
+        delete(Invoice).where(Invoice.recovery_case_id.in_(demo_case_ids)),
+        delete(Promise).where(Promise.recovery_case_id.in_(demo_case_ids)),
+        delete(ScheduledAction).where(ScheduledAction.recovery_case_id.in_(demo_case_ids)),
         delete(Installment).where(Installment.recovery_case_id.in_(demo_case_ids)),
         delete(Payment).where(Payment.recovery_case_id.in_(demo_case_ids)),
         delete(PaymentPlan).where(PaymentPlan.recovery_case_id.in_(demo_case_ids)),
@@ -112,7 +130,7 @@ def reset_simulation_data(db: Session = Depends(get_db)):
         delete(Customer).where(Customer.id.in_(demo_customer_ids)),
     ]
 
-    audit_events, messages, convs, installments, payments, plans, cases, events = (
+    audit_events, messages, convs, attempts, emails, invoices, promises, actions = (
         count(statements[0]),
         count(statements[1]),
         count(statements[2]),
@@ -121,6 +139,13 @@ def reset_simulation_data(db: Session = Depends(get_db)):
         count(statements[5]),
         count(statements[6]),
         count(statements[7]),
+    )
+    installments, payments, plans, cases, events = (
+        count(statements[8]),
+        count(statements[9]),
+        count(statements[10]),
+        count(statements[11]),
+        count(statements[12]),
     )
 
     db.commit()
@@ -137,5 +162,10 @@ def reset_simulation_data(db: Session = Depends(get_db)):
             "payments": payments,
             "plans": plans,
             "installments": installments,
+            "recovery_attempts": attempts,
+            "emails": emails,
+            "invoices": invoices,
+            "promises": promises,
+            "scheduled_actions": actions,
         },
     }

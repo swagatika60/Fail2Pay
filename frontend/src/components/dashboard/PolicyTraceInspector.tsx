@@ -2,38 +2,47 @@ import { useEffect, useState } from "react"
 import type { PolicyTrace, PolicyTraceNode } from "../../types/analytics"
 import { fetchCasePolicyTrace } from "../../services/analytics"
 import { formatCurrency } from "./MetricCard"
+import {
+  Brain,
+  Info,
+  ScrollText,
+  SendHorizonal,
+  Target,
+  X,
+  Zap,
+} from "lucide-react"
 
 const LAYER_META: Record<
   PolicyTraceNode["layer"],
-  { label: string; icon: string; color: string; note: string }
+  { label: string; icon: typeof Zap; color: string; note: string }
 > = {
   trigger: {
     label: "Trigger",
-    icon: "⚡",
+    icon: Zap,
     color: "bg-red-500/15 text-red-400 border-red-500/30",
     note: "Initiating failed-payment event",
   },
   ai_judgment: {
     label: "AI Judgment",
-    icon: "🧠",
+    icon: Brain,
     color: "bg-purple-500/15 text-purple-400 border-purple-500/30",
     note: "Bounded intent classification — never decides actions",
   },
   policy: {
     label: "Policy Layer",
-    icon: "📜",
+    icon: ScrollText,
     color: "bg-blue-500/15 text-blue-400 border-blue-500/30",
     note: "Deterministic rules — hard stops can never be overridden",
   },
   action: {
     label: "Action Dispatched",
-    icon: "📤",
+    icon: SendHorizonal,
     color: "bg-green-500/15 text-green-400 border-green-500/30",
     note: "What the system actually did",
   },
   outcome: {
     label: "Outcome",
-    icon: "🎯",
+    icon: Target,
     color: "bg-amber-500/15 text-amber-400 border-amber-500/30",
     note: "Verified result incl. money recovered",
   },
@@ -81,8 +90,9 @@ export default function PolicyTraceInspector({ caseId, onClose }: Props) {
         {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-800 p-5">
           <div>
-            <h2 className="text-lg font-bold text-slate-100">
-              🧠 Agent Reasoning &amp; Policy Trace
+            <h2 className="flex items-center gap-2 text-lg font-bold text-slate-100">
+              <Brain className="w-5 h-5 text-indigo-400" />
+              Agent Reasoning &amp; Policy Trace
             </h2>
             <p className="mt-0.5 text-xs text-slate-400">
               Full decision chain — why each step was taken, layer by layer
@@ -93,7 +103,7 @@ export default function PolicyTraceInspector({ caseId, onClose }: Props) {
             className="rounded-lg p-2 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
             aria-label="Close"
           >
-            ✕
+            <X className="w-4 h-4" />
           </button>
         </div>
 
@@ -142,7 +152,7 @@ export default function PolicyTraceInspector({ caseId, onClose }: Props) {
                       key={layer}
                       className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${meta.color}`}
                     >
-                      {meta.icon} {meta.label} · {count}
+                      <meta.icon className="w-3.5 h-3.5" /> {meta.label} · {count}
                     </span>
                   )
                 })}
@@ -159,7 +169,7 @@ export default function PolicyTraceInspector({ caseId, onClose }: Props) {
                       <span
                         className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-xs font-semibold ${meta.color}`}
                       >
-                        {meta.icon} {meta.label}
+                        <meta.icon className="w-3.5 h-3.5" /> {meta.label}
                       </span>
                       <span className="text-[10px] text-slate-500">{meta.note}</span>
                     </div>
@@ -240,10 +250,13 @@ export default function PolicyTraceInspector({ caseId, onClose }: Props) {
               )}
 
               {/* Integrity note */}
-              <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-3 text-xs text-blue-400">
-                ℹ️ Only verified captured payments appear as recovered revenue.
-                AI is used solely for bounded intent detection — every policy and
-                hard-stop decision above is deterministic and cannot be overridden.
+              <div className="flex items-start gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 p-3 text-xs text-blue-400">
+                <Info className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>
+                  Only verified captured payments appear as recovered revenue.
+                  AI is used solely for bounded intent detection — every policy and
+                  hard-stop decision above is deterministic and cannot be overridden.
+                </span>
               </div>
             </div>
           )}

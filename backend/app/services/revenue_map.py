@@ -131,7 +131,11 @@ def compute_revenue_map(db: Session) -> dict:
         if status in OPEN_STATUSES:
             at_risk_revenue += case.remaining_amount
         elif status in LOST_STATUSES:
-            lost_revenue += original
+            # Unrecovered portion of closed cases only. Captured payments on a
+            # lost/stopped case already count toward recovered_revenue, so this
+            # is (original - paid) — otherwise revenue would be double counted
+            # and Verified + At Risk + Lost would exceed Total.
+            lost_revenue += max(original - paid, 0)
 
         # Promise pool: cases currently PROMISED, or demo cases asked to
         # promise (including ones that later recovered).

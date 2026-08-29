@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect } from "react"
 import {
   Area,
   AreaChart,
@@ -15,8 +15,7 @@ import {
   YAxis,
 } from "recharts"
 import type { CSSProperties } from "react"
-import type { RevenueMap } from "../types/analytics"
-import { fetchRevenueMap } from "../services/analytics"
+import { useDashboardStore } from "../hooks/dashboardStore"
 import { PageHeader } from "../components/ui/PageHeader"
 import { Card, CardHeader } from "../components/ui/Card"
 import { StatCard } from "../components/ui/StatCard"
@@ -58,27 +57,11 @@ const CHANNEL_COLORS: Record<string, string> = {
 }
 
 export default function AnalyticsPage() {
-  const [map, setMap] = useState<RevenueMap | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const { map, loading, error, ensureLoaded } = useDashboardStore()
 
   useEffect(() => {
-    let cancelled = false
-    fetchRevenueMap()
-      .then((data) => {
-        if (!cancelled) setMap(data)
-      })
-      .catch((err) => {
-        if (!cancelled)
-          setError(err instanceof Error ? err.message : "Failed to load analytics")
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
+    ensureLoaded()
+  }, [ensureLoaded])
 
   if (loading) {
     return (

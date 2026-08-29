@@ -1,32 +1,10 @@
-import { useEffect, useState } from "react"
-import type { RevenueMap } from "../types/analytics"
-import { fetchRevenueMap } from "../services/analytics"
+import { useDashboardStore } from "../hooks/dashboardStore"
 import RevenueMapAnalytics from "../components/dashboard/RevenueMapAnalytics"
 import { PageHeader } from "../components/ui/PageHeader"
 import { Skeleton } from "../components/ui/Skeleton"
 
 export default function RevenueMapPage() {
-  const [map, setMap] = useState<RevenueMap | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    fetchRevenueMap()
-      .then((data) => {
-        if (!cancelled) setMap(data)
-      })
-      .catch((err) => {
-        if (!cancelled)
-          setError(err instanceof Error ? err.message : "Failed to load revenue map")
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
+  const { map, loading, error } = useDashboardStore()
 
   return (
     <div>

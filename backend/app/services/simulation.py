@@ -130,11 +130,16 @@ def _cleanup_demo_data(db: Session) -> int:
     from app.models.conversation import Conversation
     from app.models.conversation_message import ConversationMessage
     from app.models.customer import Customer
+    from app.models.email import SentEmail
     from app.models.installment import Installment
+    from app.models.invoice import Invoice
     from app.models.payment import Payment
     from app.models.payment_plan import PaymentPlan
+    from app.models.promise import Promise
+    from app.models.recovery_attempt import RecoveryAttempt
     from app.models.recovery_case import RecoveryCase
     from app.models.revenue_event import RevenueEvent
+    from app.models.scheduled_action import ScheduledAction
 
     demo_customer_ids = list(
         db.execute(
@@ -161,6 +166,11 @@ def _cleanup_demo_data(db: Session) -> int:
             )
         ),
         delete(Conversation).where(Conversation.recovery_case_id.in_(demo_case_ids)),
+        delete(RecoveryAttempt).where(RecoveryAttempt.recovery_case_id.in_(demo_case_ids)),
+        delete(SentEmail).where(SentEmail.recovery_case_id.in_(demo_case_ids)),
+        delete(Invoice).where(Invoice.recovery_case_id.in_(demo_case_ids)),
+        delete(Promise).where(Promise.recovery_case_id.in_(demo_case_ids)),
+        delete(ScheduledAction).where(ScheduledAction.recovery_case_id.in_(demo_case_ids)),
         delete(Installment).where(Installment.recovery_case_id.in_(demo_case_ids)),
         delete(Payment).where(Payment.recovery_case_id.in_(demo_case_ids)),
         delete(PaymentPlan).where(PaymentPlan.recovery_case_id.in_(demo_case_ids)),

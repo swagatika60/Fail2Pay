@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react"
 import { Link, useLocation } from "react-router-dom"
 import { fetchBackendStatus } from "../../services/health"
+import { useDashboardStore } from "../../hooks/dashboardStore"
 import type { BackendStatus } from "../../types/health"
 
 const STATUS_META: Record<BackendStatus, { label: string; dot: string }> = {
@@ -14,6 +15,7 @@ interface NavItem {
   label: string
   icon: ReactNode
   match: (path: string) => boolean
+  prefetch?: () => Promise<unknown>
 }
 
 function Icon({ d, className = "" }: { d: string; className?: string }) {
@@ -34,10 +36,11 @@ function Icon({ d, className = "" }: { d: string; className?: string }) {
 
 const NAV_ITEMS: NavItem[] = [
   {
-    to: "/",
+    to: "/dashboard",
     label: "Dashboard",
-    match: (p) => p === "/",
+    match: (p) => p === "/dashboard",
     icon: <Icon d="M3 3h7v7H3zM14 3h7v4h-7zM14 11h7v10h-7zM3 14h7v7H3z" />,
+    prefetch: () => import("../../pages/DashboardPage"),
   },
   {
     to: "/revenue-map",
@@ -46,6 +49,7 @@ const NAV_ITEMS: NavItem[] = [
     icon: (
       <Icon d="M3 17l6-6 4 4 8-8M3 21h18M3 3v18" />
     ),
+    prefetch: () => import("../../pages/RevenueMapPage"),
   },
   {
     to: "/cases",
@@ -54,12 +58,14 @@ const NAV_ITEMS: NavItem[] = [
     icon: (
       <Icon d="M3 7l9-4 9 4-9 4-9-4zM3 7v10l9 4 9-4V7M12 11v10" />
     ),
+    prefetch: () => import("../../pages/RecoveryCasesPage"),
   },
   {
     to: "/conversations",
     label: "Conversations",
     match: (p) => p.startsWith("/conversations"),
     icon: <Icon d="M21 11.5a8.5 8.5 0 01-8.5 8.5c-1.5 0-2.9-.4-4.1-1L3 21l2-5.4a8.5 8.5 0 1116-4.1z" />,
+    prefetch: () => import("../../pages/ConversationsPage"),
   },
   {
     to: "/plans",
@@ -68,6 +74,7 @@ const NAV_ITEMS: NavItem[] = [
     icon: (
       <Icon d="M8 3v18M16 3v18M3 8h18M3 16h18M6 3h12a1 1 0 011 1v16a1 1 0 01-1 1H6a1 1 0 01-1-1V4a1 1 0 011-1z" />
     ),
+    prefetch: () => import("../../pages/PaymentPlansPage"),
   },
   {
     to: "/invoices",
@@ -76,6 +83,7 @@ const NAV_ITEMS: NavItem[] = [
     icon: (
       <Icon d="M14 3H6a1 1 0 00-1 1v16a1 1 0 001 1h12a1 1 0 001-1V8l-5-5zM14 3v5h5M9 13h6M9 17h6" />
     ),
+    prefetch: () => import("../../pages/InvoicesPage"),
   },
   {
     to: "/analytics",
@@ -84,6 +92,7 @@ const NAV_ITEMS: NavItem[] = [
     icon: (
       <Icon d="M4 20V10M10 20V4M16 20v-7M21 20H3" />
     ),
+    prefetch: () => import("../../pages/AnalyticsPage"),
   },
   {
     to: "/settings",
@@ -92,6 +101,7 @@ const NAV_ITEMS: NavItem[] = [
     icon: (
       <Icon d="M12 15a3 3 0 100-6 3 3 0 000 6zM12 3v2.2M12 18.8V21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M3 12h2.2M18.8 12H21M5.6 18.4l1.6-1.6M16.8 7.2l1.6-1.6" />
     ),
+    prefetch: () => import("../../pages/RecoverySettingsPage"),
   },
 ]
 
@@ -117,6 +127,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<BackendStatus>("checking")
   const [drawerOpen, setDrawerOpen] = useState(false)
   const location = useLocation()
+  const { ensureLoaded } = useDashboardStore()
 
   useEffect(() => {
     let cancelled = false
@@ -142,10 +153,18 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     <nav className="flex flex-col gap-0.5">
       {NAV_ITEMS.map((item) => {
         const active = item.match(location.pathname)
+        const onPrefetch = () => {
+          if (item.prefetch) item.prefetch()
+          if (item.to === "/dashboard" || item.to === "/revenue-map" || item.to === "/cases") {
+            ensureLoaded()
+          }
+        }
         return (
           <Link
             key={item.to}
             to={item.to}
+            onMouseEnter={onPrefetch}
+            onFocus={onPrefetch}
             className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
               active
                 ? "bg-blue-600/15 text-blue-400"

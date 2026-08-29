@@ -1,5 +1,10 @@
-import { useEffect, useMemo, useState } from "react"
+import { memo, useMemo } from "react"
 import { Link } from "react-router-dom"
+import {
+  CheckCircle2,
+  Clock,
+  Zap,
+} from "lucide-react"
 import {
   Area,
   AreaChart,
@@ -12,24 +17,15 @@ import {
   XAxis,
   YAxis,
 } from "recharts"
-import type {
-  RevenueMap,
-  RevenueSummary,
-  RecoveryCaseSummary,
-} from "../types/analytics"
-import {
-  fetchRevenueMap,
-  fetchRevenueSummary,
-  fetchRecoveryCases,
-} from "../services/analytics"
+import { useDashboardStore } from "../hooks/dashboardStore"
 import { Card, CardHeader } from "../components/ui/Card"
 import { PageHeader } from "../components/ui/PageHeader"
 import { StatCard } from "../components/ui/StatCard"
 import { EmptyState } from "../components/ui/EmptyState"
 import { Skeleton, SkeletonTable } from "../components/ui/Skeleton"
 import { StatusBadge } from "../components/ui/Badge"
-import { caseMeta, riskMeta } from "../lib/status"
-import { formatINR, formatPercent, formatDate, timeAgo, initials } from "../lib/format"
+import { caseMeta } from "../lib/status"
+import { formatINR, formatINRFull, formatPercent, formatDate, timeAgo, initials } from "../lib/format"
 import type { CSSProperties } from "react"
 
 const TOOLTIP_STYLE: CSSProperties = {
@@ -50,6 +46,14 @@ const CHANNEL_COLORS: Record<string, string> = {
   unknown: "#64748b",
 }
 
+const FUNNEL_COLORS: Record<string, string> = {
+  "Expected Revenue": "#3b82f6",
+  "Entered Recovery": "#f59e0b",
+  "Verified Recovered": "#34d399",
+  "Still At Risk": "#f87171",
+  "Lost Revenue": "#64748b",
+}
+
 const OPEN_STATUSES = new Set([
   "AT_RISK",
   "RECOVERY_IN_PROGRESS",
@@ -60,38 +64,15 @@ const OPEN_STATUSES = new Set([
 
 const RISK_ORDER: Record<string, number> = { HIGH: 0, MEDIUM: 1, LOW: 2 }
 
-export default function DashboardPage() {
-  const [map, setMap] = useState<RevenueMap | null>(null)
-  const [summary, setSummary] = useState<RevenueSummary | null>(null)
-  const [cases, setCases] = useState<RecoveryCaseSummary[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+const RISK_BADGES: Record<string, string> = {
+  LOW: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
+  MEDIUM: "bg-amber-500/10 text-amber-400 border-amber-500/20",
+  HIGH: "bg-rose-500/10 text-rose-400 border-rose-500/20",
+}
 
-  useEffect(() => {
-    let cancelled = false
-    async function load() {
-      try {
-        const [mapData, summaryData, casesData] = await Promise.all([
-          fetchRevenueMap(),
-          fetchRevenueSummary(),
-          fetchRecoveryCases(),
-        ])
-        if (cancelled) return
-        setMap(mapData)
-        setSummary(summaryData)
-        setCases(casesData)
-      } catch (err) {
-        if (!cancelled)
-          setError(err instanceof Error ? err.message : "Failed to load dashboard")
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    }
-    load()
-    return () => {
-      cancelled = true
-    }
-  }, [])
+export default function DashboardPage() {
+  const { map, summary, cases, loading, error, simulatePaymentFailure } =
+    useDashboardStore()
 
   const needsAttention = useMemo(() => {
     return cases
@@ -112,6 +93,19 @@ export default function DashboardPage() {
       .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))
       .slice(0, 5)
   }, [cases])
+
+  const openCaseCount = useMemo(
+    () => cases.filter((c) => OPEN_STATUSES.has(c.status)).length,
+    [cases],
+  )
+
+  const channelData = map?.recovery_by_channel ?? []
+
+  const triggerMockFailureWebhook = () => {
+    const base = Math.max(map?.at_risk_revenue ?? 0, 500000)
+    const amount = Math.round(base * 0.1) + Math.floor(Math.random() * 300000)
+    simulatePaymentFailure(amount)
+  }
 
   if (loading) {
     return (
@@ -136,21 +130,27 @@ export default function DashboardPage() {
     )
   }
 
-  const openCaseCount = cases.filter((c) => OPEN_STATUSES.has(c.status)).length
-  const channelData = map.recovery_by_channel
-
   return (
     <div className="space-y-6">
       <PageHeader
         title="Dashboard"
         subtitle="Revenue recovery command center — verified money only."
         actions={
-          <Link
-            to="/revenue-map"
-            className="rounded-lg bg-slate-800 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-700"
-          >
-            View Revenue Map
-          </Link>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={triggerMockFailureWebhook}
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-500 hover:bg-emerald-400 text-slate-950 transition-colors shadow-sm"
+            >
+              <Zap className="w-3.5 h-3.5 fill-current" />
+              Simulate Failure Webhook
+            </button>
+            <Link
+              to="/revenue-map"
+              className="rounded-lg bg-slate-800 px-3 py-1.5 text-sm font-medium text-slate-200 hover:bg-slate-700"
+            >
+              View Revenue Map
+            </Link>
+          </div>
         }
       />
 
@@ -197,42 +197,7 @@ export default function DashboardPage() {
             subtitle="Expected → entered recovery → verified recovered. Only captured payments count."
           />
           <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={map.funnel.map((f) => ({ ...f, name: f.tooltip || f.name }))}
-                  dataKey="amount"
-                  nameKey="name"
-                  innerRadius="46%"
-                  outerRadius="76%"
-                  paddingAngle={3}
-                  stroke="#0f172a"
-                  isAnimationActive={false}
-                >
-                  {map.funnel.map((stage) => (
-                    <Cell
-                      key={stage.name}
-                      fill={
-                        {
-                          "Expected Revenue": "#3b82f6",
-                          "Entered Recovery": "#f59e0b",
-                          "Verified Recovered": "#34d399",
-                          "Still At Risk": "#f87171",
-                          "Lost Revenue": "#64748b",
-                        }[stage.name] ?? "#475569"
-                      }
-                    />
-                  ))}
-                </Pie>
-                <Tooltip
-                  formatter={(value, name) => [
-                    formatINR(Number(value)),
-                    String(name),
-                  ]}
-                  contentStyle={TOOLTIP_STYLE}
-                />
-              </PieChart>
-            </ResponsiveContainer>
+            <FunnelPieChart data={map.funnel} />
           </div>
           <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
             {map.funnel.map((stage) => (
@@ -240,14 +205,7 @@ export default function DashboardPage() {
                 <span
                   className="h-2 w-2 rounded-full"
                   style={{
-                    background:
-                      {
-                        "Expected Revenue": "#3b82f6",
-                        "Entered Recovery": "#f59e0b",
-                        "Verified Recovered": "#34d399",
-                        "Still At Risk": "#f87171",
-                        "Lost Revenue": "#64748b",
-                      }[stage.name] ?? "#475569",
+                    background: FUNNEL_COLORS[stage.name] ?? "#475569",
                   }}
                 />
                 {stage.name}: {formatINR(stage.amount)}
@@ -281,17 +239,29 @@ export default function DashboardPage() {
                       {initials(c.customer_name)}
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate text-sm font-medium text-slate-200">
+                      <span className="block break-words text-sm font-medium leading-snug text-slate-200">
                         {c.customer_name || "Unknown customer"}
                       </span>
+                      <span className="mt-0.5 flex items-center gap-1 text-xs text-slate-500">
+                        <Clock className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                        {timeAgo(c.updated_at)}
+                      </span>
                       <span className="block text-xs text-slate-500">
-                        {formatINR(c.remaining_amount)} outstanding · {timeAgo(c.updated_at)}
+                        {formatINR(c.remaining_amount)} outstanding
                       </span>
                     </span>
-                    <span className="flex shrink-0 flex-col items-end gap-1">
+                    <span className="flex shrink-0 flex-col items-end gap-1.5">
                       <StatusBadge meta={caseMeta(c.status)} />
-                      <span className={`text-[11px] font-medium ${riskMeta(c.risk_level).text}`}>
-                        {riskMeta(c.risk_level).label} risk
+                      <span
+                        className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                          RISK_BADGES[c.risk_level] ?? RISK_BADGES.MEDIUM
+                        }`}
+                      >
+                        {c.risk_level === "LOW"
+                          ? "Low risk"
+                          : c.risk_level === "HIGH"
+                            ? "High risk"
+                            : "Medium risk"}
                       </span>
                     </span>
                   </Link>
@@ -310,21 +280,7 @@ export default function DashboardPage() {
             subtitle="Verified captured revenue after a payment failure enters recovery."
           />
           <div className="h-56">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={map.recovery_timeline} margin={{ top: 6, right: 12, left: 0, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="dashGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#34d399" stopOpacity={0.35} />
-                    <stop offset="95%" stopColor="#34d399" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                <XAxis dataKey="label" tick={CHART_TICK} axisLine={{ stroke: "#334155" }} tickLine={false} minTickGap={20} />
-                <YAxis tick={CHART_TICK_Y} axisLine={{ stroke: "#334155" }} tickLine={false} tickFormatter={(v: number) => formatINR(v)} width={76} />
-                <Tooltip formatter={(value) => [formatINR(Number(value)), "Recovered"]} contentStyle={TOOLTIP_STYLE} />
-                <Area type="monotone" dataKey="cumulative" name="Recovered" stroke="#34d399" strokeWidth={2} fill="url(#dashGrad)" dot={false} isAnimationActive={false} />
-              </AreaChart>
-            </ResponsiveContainer>
+            <RecoveryAreaChart data={map.recovery_timeline} />
           </div>
         </Card>
 
@@ -336,16 +292,7 @@ export default function DashboardPage() {
           ) : (
             <>
               <div className="h-40">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie data={channelData} dataKey="amount" nameKey="name" innerRadius="52%" outerRadius="80%" paddingAngle={3} stroke="#0f172a" isAnimationActive={false}>
-                      {channelData.map((slice) => (
-                        <Cell key={slice.channel} fill={CHANNEL_COLORS[slice.channel] ?? "#64748b"} />
-                      ))}
-                    </Pie>
-                    <Tooltip formatter={(value, name) => [formatINR(Number(value)), String(name)]} contentStyle={TOOLTIP_STYLE} />
-                  </PieChart>
-                </ResponsiveContainer>
+                <ChannelPieChart data={channelData} />
               </div>
               <div className="mt-2 space-y-1.5">
                 {channelData.map((slice) => (
@@ -397,11 +344,12 @@ export default function DashboardPage() {
                   {initials(c.customer_name)}
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium text-slate-200">
+                  <span className="block break-words text-sm font-medium leading-snug text-slate-200">
                     {c.customer_name || "Unknown customer"}
                   </span>
-                  <span className="block text-xs text-slate-500">
-                    {formatINR(c.original_amount)} · recovered {formatDate(c.updated_at)}
+                  <span className="mt-0.5 flex items-center gap-1 text-xs text-slate-500">
+                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
+                    Recovered {formatDate(c.updated_at)} · {formatINRFull(c.recovered_amount)}
                   </span>
                 </span>
                 <span className="text-sm font-bold text-green-400">{formatINR(c.recovered_amount)}</span>
@@ -413,3 +361,105 @@ export default function DashboardPage() {
     </div>
   )
 }
+
+const FunnelPieChart = memo(function FunnelPieChart({
+  data,
+}: {
+  data: { name: string; amount: number; tooltip: string }[]
+}) {
+  const enriched = data.map((f) => ({ ...f, name: f.tooltip || f.name }))
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <PieChart>
+        <Pie
+          data={enriched}
+          dataKey="amount"
+          nameKey="name"
+          innerRadius="46%"
+          outerRadius="76%"
+          paddingAngle={3}
+          stroke="#0f172a"
+          isAnimationActive={false}
+        >
+          {data.map((stage) => (
+            <Cell key={stage.name} fill={FUNNEL_COLORS[stage.name] ?? "#475569"} />
+          ))}
+        </Pie>
+        <Tooltip
+          formatter={(value, name) => [formatINR(Number(value)), String(name)]}
+          contentStyle={TOOLTIP_STYLE}
+        />
+      </PieChart>
+    </ResponsiveContainer>
+  )
+})
+
+const RecoveryAreaChart = memo(function RecoveryAreaChart({
+  data,
+}: {
+  data: { label: string; recovered: number; cumulative: number }[]
+}) {
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <AreaChart data={data} margin={{ top: 6, right: 12, left: 0, bottom: 0 }}>
+        <defs>
+          <linearGradient id="dashGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%" stopColor="#34d399" stopOpacity={0.35} />
+            <stop offset="95%" stopColor="#34d399" stopOpacity={0} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+        <XAxis dataKey="label" tick={CHART_TICK} axisLine={{ stroke: "#334155" }} tickLine={false} minTickGap={20} />
+        <YAxis tick={CHART_TICK_Y} axisLine={{ stroke: "#334155" }} tickLine={false} tickFormatter={(v: number) => formatINR(v)} width={76} />
+        <Tooltip content={<TimelineTooltip />} />
+        <Area type="monotone" dataKey="cumulative" name="Recovered" stroke="#34d399" strokeWidth={2} fill="url(#dashGrad)" dot={false} isAnimationActive={false} />
+      </AreaChart>
+    </ResponsiveContainer>
+  )
+})
+
+interface TimelineTooltipProps {
+  active?: boolean
+  payload?: { payload: { label: string; recovered: number; cumulative: number } }[]
+}
+
+function TimelineTooltip({ active, payload }: TimelineTooltipProps) {
+  if (!active || !payload || payload.length === 0) return null
+  const d = payload[0].payload
+  return (
+    <div style={TOOLTIP_STYLE} className="rounded-lg px-3 py-2 text-xs shadow-xl">
+      <p className="mb-1.5 font-semibold text-slate-200">{d.label}</p>
+      <p className="flex items-center justify-between gap-5">
+        <span className="text-slate-400">Period recovered</span>
+        <span className="font-medium tabular-nums text-emerald-400">
+          {formatINRFull(d.recovered)}
+        </span>
+      </p>
+      <p className="mt-0.5 flex items-center justify-between gap-5">
+        <span className="text-slate-400">Cumulative</span>
+        <span className="font-medium tabular-nums text-emerald-300">
+          {formatINRFull(d.cumulative)}
+        </span>
+      </p>
+    </div>
+  )
+}
+
+const ChannelPieChart = memo(function ChannelPieChart({
+  data,
+}: {
+  data: { channel: string; name: string; amount: number; count: number }[]
+}) {
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <PieChart>
+        <Pie data={data} dataKey="amount" nameKey="name" innerRadius="52%" outerRadius="80%" paddingAngle={3} stroke="#0f172a" isAnimationActive={false}>
+          {data.map((slice) => (
+            <Cell key={slice.channel} fill={CHANNEL_COLORS[slice.channel] ?? "#64748b"} />
+          ))}
+        </Pie>
+        <Tooltip formatter={(value, name) => [formatINR(Number(value)), String(name)]} contentStyle={TOOLTIP_STYLE} />
+      </PieChart>
+    </ResponsiveContainer>
+  )
+})

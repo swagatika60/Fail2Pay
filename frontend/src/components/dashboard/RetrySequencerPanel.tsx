@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import type { RetrySequencer } from "../../services/operations"
 import { fetchPlanRetrySequencer } from "../../services/operations"
 import { formatCurrency } from "./MetricCard"
@@ -26,70 +26,73 @@ function fmt(dt: string | null): string {
   })
 }
 
-export default function RetrySequencerPanel({ planId }: { planId: string }) {
+interface Props {
+  planId: string
+  degraded?: boolean
+  strategyLabel?: string | null
+  strategy?: string | null
+}
+
+export default function RetrySequencerPanel({
+  planId,
+  degraded = false,
+  strategyLabel,
+  strategy,
+}: Props) {
   const [seq, setSeq] = useState<RetrySequencer | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [open, setOpen] = useState(false)
+  const loadedRef = useRef(false)
 
+  // Fetch the full timeline the first time the panel is expanded. The header
+  // (degraded flag + strategy) arrives from the parent's plan list, so we
+  // avoid firing a retry-sequencer request for every plan on page load.
   useEffect(() => {
+    if (!open || loadedRef.current) return
+    loadedRef.current = true
     setLoading(true)
     setError(null)
-    setOpen(false)
     fetchPlanRetrySequencer(planId)
-      .then((data) => {
-        setSeq(data)
-        if (data.degraded) setOpen(true)
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : "Failed to load sequencer"))
+      .then(setSeq)
+      .catch((e) =>
+        setError(e instanceof Error ? e.message : "Failed to load sequencer"),
+      )
       .finally(() => setLoading(false))
-  }, [planId])
+  }, [open, planId])
 
-  if (loading) {
-    return (
-      <div className="mt-3 rounded-xl border border-slate-700 bg-slate-800/40 p-3 text-sm text-slate-500">
-        Loading retry sequencer…
-      </div>
-    )
-  }
+  const toggle = () => setOpen((o) => !o)
 
-  if (error || !seq) {
-    return (
-      <div className="mt-3 rounded-xl border border-red-800 bg-red-900/20 p-3 text-xs text-red-400">
-        {error || "No sequencer data"}
-      </div>
-    )
-  }
+  const title = degraded
+    ? "Payment Degradation & Mandate Retry"
+    : "Schedule / Retry Status"
+  const subtitle = degraded
+    ? strategyLabel || "Retry strategy recommended"
+    : "No degradation — payments on track"
 
   return (
     <div className="mt-3 overflow-hidden rounded-xl border border-slate-700 bg-slate-900">
       <button
-        onClick={() => setOpen((o) => !o)}
+        onClick={toggle}
         className={`flex w-full items-center justify-between gap-2 px-4 py-3 text-left ${
-          seq.degraded
+          degraded
             ? "bg-amber-500/10 hover:bg-amber-500/15"
             : "bg-slate-800/40 hover:bg-slate-800/60"
         }`}
       >
         <div className="flex items-center gap-2">
           <span className="text-base">
-            {seq.degraded ? (seq.strategy === "SPLIT_PLAN" ? "💳" : "🔗") : "📅"}
+            {degraded ? (strategy === "SPLIT_PLAN" ? "💳" : "🔗") : "📅"}
           </span>
           <div>
             <p
               className={`text-sm font-semibold ${
-                seq.degraded ? "text-amber-300" : "text-slate-200"
+                degraded ? "text-amber-300" : "text-slate-200"
               }`}
             >
-              {seq.degraded
-                ? "Payment Degradation & Mandate Retry"
-                : "Schedule / Retry Status"}
+              {title}
             </p>
-            <p className="text-xs text-slate-400">
-              {seq.degraded
-                ? seq.strategy_label
-                : "No degradation — payments on track"}
-            </p>
+            <p className="text-xs text-slate-400">{subtitle}</p>
           </div>
         </div>
         <span className="text-slate-400">{open ? "▲" : "▼"}</span>
@@ -97,14 +100,26 @@ export default function RetrySequencerPanel({ planId }: { planId: string }) {
 
       {open && (
         <div className="space-y-3 border-t border-slate-800 px-4 py-4">
-          {seq.blocked && (
+          {loading && (
+            <div className="text-sm text-slate-500">
+              Loading retry timeline…
+            </div>
+          )}
+
+          {!loading && error && (
+            <div className="rounded-lg border border-red-800 bg-red-500/10 p-3 text-xs text-red-300">
+              {error}
+            </div>
+          )}
+
+          {!loading && seq && seq.blocked && (
             <div className="rounded-lg border border-red-800 bg-red-500/10 p-3 text-xs text-red-300">
               🛑 Retries halted: hard-stop condition ({seq.block_reason}). No
               automated outreach will be scheduled.
             </div>
           )}
 
-          {seq.degraded && seq.split && (
+          {!loading && seq && seq.degraded && seq.split && (
             <div className="grid grid-cols-2 gap-2 text-xs">
               <div className="rounded-lg bg-slate-800/50 p-2.5">
                 <p className="text-slate-500">Upfront (due now)</p>
@@ -123,7 +138,7 @@ export default function RetrySequencerPanel({ planId }: { planId: string }) {
             </div>
           )}
 
-          {!seq.blocked && (
+          {!loading && seq && !seq.blocked && (
             <div>
               <p className="mb-2 text-[10px] font-medium uppercase tracking-wide text-slate-500">
                 Retry timeline (scheduled execution)

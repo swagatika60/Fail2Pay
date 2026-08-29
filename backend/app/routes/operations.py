@@ -35,6 +35,44 @@ def _case_customer_context(db: Session, case_id) -> dict:
     }
 
 
+def _bulk_case_customer_context(db: Session, case_ids) -> dict:
+    """Preload case + customer context for many case ids in a handful of queries.
+
+    Avoids the N+1 pattern of _case_customer_context (one RecoveryCase + one
+    Customer query per row) and returns a map keyed by case id.
+    """
+    from app.models.customer import Customer
+    from app.models.recovery_case import RecoveryCase
+
+    case_ids = list({cid for cid in case_ids if cid is not None})
+    if not case_ids:
+        return {}
+
+    cases = list(
+        db.execute(select(RecoveryCase).where(RecoveryCase.id.in_(case_ids))).scalars().all()
+    )
+    customer_ids = {c.customer_id for c in cases if c.customer_id}
+    customers = (
+        list(db.execute(select(Customer).where(Customer.id.in_(customer_ids))).scalars().all())
+        if customer_ids
+        else []
+    )
+    customer_map = {c.id: c for c in customers}
+
+    context: dict = {}
+    for case in cases:
+        customer = customer_map.get(case.customer_id) if case.customer_id else None
+        context[case.id] = {
+            "case_id": str(case.id),
+            "case_status": case.status.value if hasattr(case.status, "value") else case.status,
+            "case_risk_level": case.risk_level,
+            "customer_name": customer.name if customer else None,
+            "customer_email": customer.email if customer else None,
+            "customer_phone": customer.phone if customer else None,
+        }
+    return context
+
+
 @router.get("/payment-plans")
 def list_payment_plans(db: Session = Depends(get_db)):
     """List all payment plans with case + customer context."""
@@ -46,11 +84,22 @@ def list_payment_plans(db: Session = Depends(get_db)):
         ).scalars().all()
     )
 
+    context = _bulk_case_customer_context(
+        db, [plan.recovery_case_id for plan in plans]
+    )
+    degradations = _bulk_degradation_summary(db, plans)
+
     result = []
     for plan in plans:
         total_installments = plan.installments_paid + plan.installments_failed
         remaining_installments = max(plan.number_of_installments - plan.installments_paid, 0)
-        degradation = _degradation_summary(db, plan)
+        degradation = degradations.get(plan.id, {
+            "degraded": False,
+            "fail_threshold": 0,
+            "failed_count": plan.installments_failed,
+            "strategy": None,
+            "strategy_label": None,
+        })
         result.append({
             "id": str(plan.id),
             "total_amount": plan.total_amount,
@@ -80,7 +129,7 @@ def list_payment_plans(db: Session = Depends(get_db)):
                     (plan.amount_paid / plan.total_amount) * 100, 1
                 ) if plan.total_amount > 0 else 0.0,
             },
-            **{k: v for k, v in _case_customer_context(db, plan.recovery_case_id).items()},
+            **{k: v for k, v in context.get(plan.recovery_case_id, {}).items()},
         })
 
     return result
@@ -106,6 +155,10 @@ def list_conversations(db: Session = Depends(get_db)):
     messages_by_conv: dict = {}
     for msg in message_rows:
         messages_by_conv.setdefault(msg.conversation_id, []).append(msg)
+
+    context = _bulk_case_customer_context(
+        db, [conv.recovery_case_id for conv in conversations]
+    )
 
     result = []
     for conv in conversations:
@@ -135,7 +188,7 @@ def list_conversations(db: Session = Depends(get_db)):
                 }
                 for m in messages[-50:]
             ],
-            **{k: v for k, v in _case_customer_context(db, conv.recovery_case_id).items()},
+            **{k: v for k, v in context.get(conv.recovery_case_id, {}).items()},
         })
 
     return result
@@ -150,6 +203,10 @@ def list_invoices(db: Session = Depends(get_db)):
         db.execute(
             select(Invoice).order_by(Invoice.created_at.desc())
         ).scalars().all()
+    )
+
+    context = _bulk_case_customer_context(
+        db, [invoice.recovery_case_id for invoice in invoices]
     )
 
     result = []
@@ -170,7 +227,7 @@ def list_invoices(db: Session = Depends(get_db)):
             "delivered_at": invoice.delivered_at.isoformat() if invoice.delivered_at else None,
             "created_at": invoice.created_at.isoformat() if invoice.created_at else None,
             "secure_token": invoice.secure_token,
-            **{k: v for k, v in _case_customer_context(db, invoice.recovery_case_id).items() if k != "case_id"},
+            **{k: v for k, v in context.get(invoice.recovery_case_id, {}).items() if k != "case_id"},
         })
 
     return result
@@ -205,6 +262,61 @@ def _degradation_summary(db: Session, plan) -> dict:
             else "Alternate-gateway payment link" if strategy else None
         ),
     }
+
+
+def _bulk_degradation_summary(db: Session, plans) -> dict:
+    """Degradation summaries for many plans in a single FAILED query.
+
+    Collects failure reasons for every degraded plan at once, then computes
+    each plan's strategy locally — avoiding one _collect_failures query per
+    plan (the N+1 pattern in the old list endpoint).
+    """
+    from app.models.installment import Installment
+    from app.services.retry_sequencer import DEGRADATION_FAIL_THRESHOLD
+
+    degraded_ids = {
+        plan.id
+        for plan in plans
+        if plan.installments_failed >= DEGRADATION_FAIL_THRESHOLD
+    }
+    if not degraded_ids:
+        return {}
+
+    failures_by_plan: dict = {pid: [] for pid in degraded_ids}
+    if degraded_ids:
+        rows = db.execute(
+            select(Installment).where(
+                Installment.payment_plan_id.in_(degraded_ids),
+                Installment.status == "FAILED",
+            )
+        ).scalars().all()
+        for row in rows:
+            failures_by_plan.setdefault(row.payment_plan_id, []).append(
+                row.failure_reason or "unknown"
+            )
+
+    result: dict = {}
+    for plan in plans:
+        if plan.id not in degraded_ids:
+            continue
+        failures = failures_by_plan.get(plan.id, [])
+        if any(r in ("mandate_declined", "autopay_failed", "upi_mandate_failed") for r in failures):
+            strategy = "SPLIT_PLAN"
+        else:
+            strategy = "ALTERNATE_GATEWAY"
+        result[plan.id] = {
+            "degraded": True,
+            "fail_threshold": DEGRADATION_FAIL_THRESHOLD,
+            "failed_count": plan.installments_failed,
+            "strategy": strategy,
+            "strategy_label": (
+                "Rewarded split plan: 50% upfront + 50% in 14 days"
+                if strategy == "SPLIT_PLAN"
+                else "Alternate-gateway payment link"
+            ),
+        }
+    return result
+
 
 
 @router.get("/plans/{plan_id}/retry-sequencer")

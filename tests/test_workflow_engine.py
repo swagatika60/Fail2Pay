@@ -184,9 +184,16 @@ class TestStateTransitionRules:
         """No transitions from LOST."""
         assert len(VALID_TRANSITIONS[RecoveryStatus.LOST]) == 0
 
-    def test_stopped_is_terminal(self):
-        """No transitions from STOPPED."""
-        assert len(VALID_TRANSITIONS[RecoveryStatus.STOPPED]) == 0
+    def test_stopped_permits_customer_re_engagement(self):
+        """STOPPED cases can only be re-opened to PROMISED or RECOVERY_IN_PROGRESS
+        when the customer voluntarily re-engages. It never transitions to
+        terminal success/failure states directly."""
+        allowed = VALID_TRANSITIONS[RecoveryStatus.STOPPED]
+        assert RecoveryStatus.PROMISED in allowed
+        assert RecoveryStatus.RECOVERY_IN_PROGRESS in allowed
+        assert RecoveryStatus.RECOVERED not in allowed
+        assert RecoveryStatus.LOST not in allowed
+        assert RecoveryStatus.STOPPED not in allowed
 
 
 # --- Start Recovery tests ---

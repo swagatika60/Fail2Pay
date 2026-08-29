@@ -60,7 +60,7 @@ export default function ConversationsPage() {
   const totalOutbound = conversations.reduce((s, c) => s + c.outbound_count, 0)
 
   const refresh = () => {
-    fetchConversationsList()
+    fetchConversationsList({ bypass: true })
       .then(setConversations)
       .catch(() => {})
   }

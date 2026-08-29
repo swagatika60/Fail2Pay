@@ -1,5 +1,6 @@
 import type { RecoveryTimeline as TimelineData } from "../../types/analytics"
 import { formatCurrency } from "./MetricCard"
+import { Info, Activity, GitCommit } from "lucide-react"
 
 interface RecoveryTimelineProps {
   timeline: TimelineData | null
@@ -62,8 +63,9 @@ export default function RecoveryTimeline({
       {/* Case Summary Header */}
       <div className="rounded-lg border border-slate-700/50 bg-slate-800/30 p-4">
         <div className="mb-3 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-slate-300">
-            📋 Case Summary
+          <h3 className="text-sm font-medium text-slate-200 flex items-center gap-2">
+            <Info className="w-4 h-4 text-slate-400" />
+            Case Summary
           </h3>
           <span
             className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${
@@ -148,8 +150,10 @@ export default function RecoveryTimeline({
 
       {/* Timeline */}
       <div>
-        <h3 className="mb-3 text-sm font-semibold text-slate-300">
-          🕐 Recovery Timeline ({events.length} events)
+        <h3 className="mb-3 text-sm font-medium text-slate-200 flex items-center gap-2">
+          <Activity className="w-4 h-4 text-cyan-400" />
+          Recovery Timeline ({events.length}{" "}
+          {events.length === 1 ? "event" : "events"})
         </h3>
 
         {events.length === 0 ? (
@@ -190,7 +194,10 @@ export default function RecoveryTimeline({
                     >
                       <div className="mb-1 flex items-center justify-between">
                         <div className="flex items-center gap-2">
-                          <span className="text-base">{event.icon}</span>
+                          <span className="inline-flex items-center gap-1.5 font-mono text-xs px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">
+                            <GitCommit className="w-3 h-3 text-cyan-400" />
+                            {event.entity_type}
+                          </span>
                           <span className="text-sm font-medium text-slate-200">
                             {event.description}
                           </span>
@@ -207,9 +214,6 @@ export default function RecoveryTimeline({
                       )}
 
                       <div className="flex flex-wrap gap-2 text-[10px] text-slate-500">
-                        <span className="rounded bg-slate-900/50 px-1.5 py-0.5">
-                          {event.entity_type}
-                        </span>
                         {event.result && (
                           <span
                             className={`rounded px-1.5 py-0.5 ${

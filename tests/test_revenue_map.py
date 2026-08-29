@@ -107,3 +107,33 @@ def test_revenue_map_empty_database(db_session):
     assert rm["recovered_revenue"] == 0
     assert rm["funnel"] == []
     assert rm["recovery_timeline"] == []
+
+
+def test_reconciled_sum_matches_total_revenue(db_session):
+    """Verified Recovered + Still At Risk + Lost must equal Total Revenue.
+
+    Captured payments on a closed (lost/stopped) case must not be double
+    counted: it counts toward recovered, and only the unrecovered remainder
+    is "lost".
+    """
+    run_simulation(db_session)
+    rm = compute_revenue_map(db_session)
+
+    funnel = {stage["name"]: stage["amount"] for stage in rm["funnel"]}
+
+    assert (
+        rm["recovered_revenue"] + rm["at_risk_revenue"] + rm["lost_revenue"]
+        == rm["total_revenue"]
+    )
+    assert funnel["Verified Recovered"] == rm["recovered_revenue"]
+    assert funnel["Still At Risk"] == rm["at_risk_revenue"]
+    assert funnel["Lost Revenue"] == rm["lost_revenue"]
+    assert (
+        funnel["Verified Recovered"]
+        + funnel["Still At Risk"]
+        + funnel["Lost Revenue"]
+        == funnel["Expected Revenue"]
+    )
+    assert rm["attempted_unfulfilled"] == max(
+        rm["attempted_recovery"] - rm["recovered_revenue"], 0
+    )

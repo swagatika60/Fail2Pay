@@ -4,6 +4,20 @@ import { formatCurrency } from "../components/dashboard/MetricCard"
 import { fetchVerifiedImpactLedger } from "../services/analytics"
 import type { VerifiedImpactLedger } from "../types/analytics"
 
+async function extractError(
+  response: Response,
+  fallback: string,
+): Promise<string> {
+  try {
+    const body = await response.json()
+    if (typeof body?.detail === "string") return body.detail
+    if (typeof body?.message === "string") return body.message
+  } catch {
+    // ignore non-JSON error bodies
+  }
+  return fallback
+}
+
 interface SimulationResults {
   total_transactions: number
   customers_created: number
@@ -94,7 +108,9 @@ export default function SimulationPage() {
     setError(null)
     try {
       const response = await fetch("/api/simulation/run", { method: "POST" })
-      if (!response.ok) throw new Error("Failed to run simulation")
+      if (!response.ok) {
+        throw new Error(await extractError(response, "Failed to run simulation"))
+      }
       const data = await response.json()
       setResults(data)
       try {
@@ -120,11 +136,16 @@ export default function SimulationPage() {
   const resetData = async () => {
     if (!confirm("Reset all simulation data? This cannot be undone.")) return
     try {
-      await fetch("/api/simulation/reset", { method: "DELETE" })
+      const response = await fetch("/api/simulation/reset", { method: "DELETE" })
+      if (!response.ok) {
+        setError(await extractError(response, "Failed to reset simulation"))
+        return
+      }
       setResults(null)
       setLedger(null)
+      setError(null)
     } catch (err) {
-      console.error("Reset failed:", err)
+      setError(err instanceof Error ? err.message : "Reset failed")
     }
   }
 
@@ -145,7 +166,7 @@ export default function SimulationPage() {
         </div>
         <div className="flex gap-2">
           <Link
-            to="/"
+            to="/dashboard"
             className="rounded-lg bg-slate-800 px-4 py-2 text-sm text-slate-300 hover:bg-slate-700"
           >
             ← Dashboard

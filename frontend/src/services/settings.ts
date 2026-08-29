@@ -1,9 +1,22 @@
 import type { RecoverySettings, RecoverySettingsUpdate } from "../types/settings"
 
-export async function fetchRecoverySettings(): Promise<RecoverySettings> {
+const TTL_MS = 1000 * 60 * 5
+let settingsCache: RecoverySettings | null = null
+let settingsFetchedAt = 0
+
+export async function fetchRecoverySettings(bypass = false): Promise<RecoverySettings> {
+  if (
+    !bypass &&
+    settingsCache &&
+    Date.now() - settingsFetchedAt < TTL_MS
+  ) {
+    return settingsCache
+  }
   const response = await fetch("/api/settings/recovery")
   if (!response.ok) throw new Error("Failed to fetch recovery settings")
-  return response.json()
+  settingsCache = (await response.json()) as RecoverySettings
+  settingsFetchedAt = Date.now()
+  return settingsCache
 }
 
 export async function saveRecoverySettings(
@@ -20,5 +33,7 @@ export async function saveRecoverySettings(
       body?.detail?.[0]?.msg ?? body?.detail ?? "Failed to save recovery settings"
     throw new Error(String(detail))
   }
-  return response.json()
+  settingsCache = (await response.json()) as RecoverySettings
+  settingsFetchedAt = Date.now()
+  return settingsCache
 }

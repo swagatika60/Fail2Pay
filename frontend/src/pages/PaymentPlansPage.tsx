@@ -207,7 +207,12 @@ export default function PaymentPlansPage() {
                   </div>
                 )}
 
-                <RetrySequencerPanel planId={plan.id} />
+                <RetrySequencerPanel
+                  planId={plan.id}
+                  degraded={plan.degradation?.degraded}
+                  strategyLabel={plan.degradation?.strategy_label}
+                  strategy={plan.degradation?.strategy}
+                />
               </Card>
             )
           })}

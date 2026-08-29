@@ -68,7 +68,12 @@ VALID_TRANSITIONS: dict[RecoveryStatus, set[RecoveryStatus]] = {
     },
     RecoveryStatus.RECOVERED: set(),  # terminal
     RecoveryStatus.LOST: set(),  # terminal
-    RecoveryStatus.STOPPED: set(),  # terminal
+    # STOPPED is normally terminal, but a customer-initiated re-engagement
+    # (a voluntary message expressing payment intent) re-opens the case.
+    RecoveryStatus.STOPPED: {
+        RecoveryStatus.PROMISED,
+        RecoveryStatus.RECOVERY_IN_PROGRESS,
+    },
 }
 
 

@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useState } from "react"
+import { useMemo, useState } from "react"
 import { Link } from "react-router-dom"
-import type { RecoveryCaseSummary } from "../types/analytics"
-import { fetchRecoveryCases } from "../services/analytics"
+import { useDashboardStore } from "../hooks/dashboardStore"
 import { PageHeader } from "../components/ui/PageHeader"
 import { Card } from "../components/ui/Card"
 import { EmptyState } from "../components/ui/EmptyState"
@@ -25,30 +24,10 @@ const STATUS_TABS: { key: string; label: string }[] = [
 const RISKS = ["all", "HIGH", "MEDIUM", "LOW"]
 
 export default function RecoveryCasesPage() {
-  const [cases, setCases] = useState<RecoveryCaseSummary[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const { cases, loading, error } = useDashboardStore()
   const [status, setStatus] = useState<string>("all")
   const [risk, setRisk] = useState<string>("all")
   const [query, setQuery] = useState("")
-
-  useEffect(() => {
-    let cancelled = false
-    fetchRecoveryCases()
-      .then((data) => {
-        if (!cancelled) setCases(data)
-      })
-      .catch((err) => {
-        if (!cancelled)
-          setError(err instanceof Error ? err.message : "Failed to load cases")
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
 
   const filtered = useMemo(() => {
     return cases
@@ -72,9 +51,19 @@ export default function RecoveryCasesPage() {
     return m
   }, [cases])
 
-  const totalOutstanding = filtered.reduce((sum, c) => sum + c.remaining_amount, 0)
-  const totalRecovered = filtered.reduce((sum, c) => sum + c.recovered_amount, 0)
-  const totalOriginal = filtered.reduce((sum, c) => sum + c.original_amount, 0)
+  const totals = useMemo(
+    () => filtered.reduce(
+      (acc, c) => {
+        acc.outstanding += c.remaining_amount
+        acc.recovered += c.recovered_amount
+        acc.original += c.original_amount
+        return acc
+      },
+      { outstanding: 0, recovered: 0, original: 0 },
+    ),
+    [filtered],
+  )
+  const { outstanding: totalOutstanding, recovered: totalRecovered, original: totalOriginal } = totals
 
   return (
     <div className="space-y-6">

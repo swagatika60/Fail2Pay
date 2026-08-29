@@ -1,5 +1,24 @@
 import { useEffect, useState } from "react"
 import { useParams, Link } from "react-router-dom"
+import {
+  Terminal,
+  CheckCircle2,
+  Clock,
+  FileText,
+  CalendarCheck,
+  CreditCard,
+  MessageSquare,
+  Mail,
+  ShieldAlert,
+  Info,
+  AlertTriangle,
+  RefreshCw,
+  Calendar,
+  BarChart3,
+  XCircle,
+  Ban,
+  ArrowLeft,
+} from "lucide-react"
 import type {
   RecoveryCaseDetail,
   PaymentPromise,
@@ -18,6 +37,11 @@ import {
   fetchCaseHardStops,
   fetchCaseTimeline,
 } from "../services/analytics"
+import {
+  simulateCustomerMessage,
+  generateAgentInitial,
+  generateCaseEmail,
+} from "../services/operations"
 import { formatCurrency } from "../components/dashboard/MetricCard"
 import PromiseTimeline from "../components/dashboard/PromiseTimeline"
 import PaymentPlanView from "../components/dashboard/PaymentPlanView"
@@ -39,25 +63,25 @@ const STATUS_COLORS: Record<string, string> = {
   STOPPED: "bg-gray-500/20 text-gray-400 border-gray-500/30",
 }
 
-const STATUS_ICONS: Record<string, string> = {
-  AT_RISK: "⚠️",
-  RECOVERY_IN_PROGRESS: "🔄",
-  PROMISED: "🤝",
-  SCHEDULED: "📅",
-  PARTIALLY_RECOVERED: "📊",
-  RECOVERED: "✅",
-  LOST: "❌",
-  STOPPED: "🛑",
+const STATUS_ICONS: Record<string, typeof AlertTriangle> = {
+  AT_RISK: AlertTriangle,
+  RECOVERY_IN_PROGRESS: RefreshCw,
+  PROMISED: CalendarCheck,
+  SCHEDULED: Calendar,
+  PARTIALLY_RECOVERED: BarChart3,
+  RECOVERED: CheckCircle2,
+  LOST: XCircle,
+  STOPPED: Ban,
 }
 
 const TABS = [
-  { id: "timeline", label: "Timeline", icon: "🕐" },
-  { id: "overview", label: "Details", icon: "📊" },
-  { id: "promises", label: "Promises", icon: "🤝" },
-  { id: "plans", label: "Payment Plans", icon: "💳" },
-  { id: "conversation", label: "Conversation", icon: "💬" },
-  { id: "emails", label: "Emails", icon: "📧" },
-  { id: "hardstops", label: "Hard Stops", icon: "🛑" },
+  { id: "timeline", label: "Timeline", icon: Clock },
+  { id: "overview", label: "Details", icon: FileText },
+  { id: "promises", label: "Promises", icon: CalendarCheck },
+  { id: "plans", label: "Payment Plans", icon: CreditCard },
+  { id: "conversation", label: "Conversation", icon: MessageSquare },
+  { id: "emails", label: "Emails", icon: Mail },
+  { id: "hardstops", label: "Hard Stops", icon: ShieldAlert },
 ]
 
 function formatDateTime(dateStr: string | null): string {
@@ -88,12 +112,84 @@ export default function RecoveryCasePage() {
   const [tabLoading, setTabLoading] = useState(false)
   const [showPolicyTrace, setShowPolicyTrace] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
+  const [typing, setTyping] = useState(false)
+
+  const refreshConversations = () => {
+    if (!caseId) return
+    fetchCaseConversations(caseId).then(setConversations).catch(console.error)
+  }
+
+  const refreshEmails = () => {
+    if (!caseId) return
+    fetchCaseEmails(caseId).then(setEmails).catch(console.error)
+  }
+
+  const handleQuickReply = async (payloadId: string) => {
+    if (!caseId || typing) return
+    let trigger = payloadId
+    if (payloadId.startsWith("lang:")) {
+      const code = payloadId.replace(/^lang:/, "") === "hi" ? "hi" : "en"
+      trigger = `language_${code}`
+    } else {
+      const map: Record<string, string> = {
+        pay_now: "pay_link",
+        split_emi: "installments",
+        activate_plan: "installments",
+        split_2: "split_2",
+        split_4: "split_4",
+      }
+      trigger = map[payloadId] || payloadId
+    }
+    setTyping(true)
+    try {
+      await simulateCustomerMessage(caseId, trigger)
+      refreshConversations()
+    } finally {
+      setTyping(false)
+    }
+  }
+
+  const handleGenerateEmail = async () => {
+    if (!caseId) return
+    try {
+      await generateCaseEmail(caseId)
+      refreshEmails()
+    } catch (err) {
+      console.error("Failed to generate email:", err)
+    }
+  }
+
+  const handleEmailPayNow = async (payCaseId: string) => {
+    if (!payCaseId || typing) return
+    setTyping(true)
+    try {
+      await simulateCustomerMessage(payCaseId, "pay_link")
+      refreshConversations()
+      refreshEmails()
+    } catch (err) {
+      console.error("Failed to process pay now:", err)
+    } finally {
+      setTyping(false)
+    }
+  }
+
+  const startConversation = async () => {
+    if (!caseId) return
+    try {
+      await generateAgentInitial(caseId)
+      setReloadKey((k) => k + 1)
+      if (activeTab === "conversation") refreshConversations()
+      if (activeTab === "emails") refreshEmails()
+    } catch (err) {
+      console.error("Failed to start conversation:", err)
+    }
+  }
 
   // Load case detail
   useEffect(() => {
     if (!caseId) return
     setLoading(true)
-    fetchRecoveryCaseDetail(caseId)
+    fetchRecoveryCaseDetail(caseId, { bypass: reloadKey > 0 })
       .then(setDetail)
       .catch((err: unknown) =>
         setError(err instanceof Error ? err.message : String(err)),
@@ -155,10 +251,11 @@ export default function RecoveryCasePage() {
           <p className="text-lg font-semibold text-red-400">Case not found</p>
           <p className="mt-2 text-sm text-slate-400">{error || "Invalid case ID"}</p>
           <Link
-            to="/"
-            className="mt-4 inline-block rounded-lg bg-slate-800 px-4 py-2 text-sm text-slate-200 hover:bg-slate-700"
+            to="/dashboard"
+            className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-slate-800 px-4 py-2 text-sm text-slate-200 hover:bg-slate-700"
           >
-            ← Back to Dashboard
+            <ArrowLeft className="w-4 h-4" />
+            Back to Dashboard
           </Link>
         </div>
       </div>
@@ -184,9 +281,10 @@ export default function RecoveryCasePage() {
       <div className="mb-4">
         <Link
           to="/cases"
-          className="text-sm text-slate-400 hover:text-slate-200"
+          className="inline-flex items-center gap-1.5 text-sm text-slate-400 hover:text-slate-200"
         >
-          ← Back to Recovery Cases
+          <ArrowLeft className="w-4 h-4" />
+          Back to Recovery Cases
         </Link>
       </div>
 
@@ -206,16 +304,20 @@ export default function RecoveryCasePage() {
           <div className="flex items-center gap-2">
             <button
               onClick={() => setShowPolicyTrace(true)}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-purple-500/40 bg-purple-500/10 px-3 py-1.5 text-sm font-medium text-purple-300 hover:bg-purple-500/20"
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 transition-colors"
             >
-              🧠 Agent Reasoning &amp; Policy Trace
+              <Terminal className="w-3.5 h-3.5 text-indigo-400" />
+              Policy &amp; Decision Trace
             </button>
             <span
               className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-medium ${
                 STATUS_COLORS[detail.status] || "bg-slate-700 text-slate-300 border-slate-600"
               }`}
             >
-              {STATUS_ICONS[detail.status] || "📝"}
+              {(() => {
+                const Icon = STATUS_ICONS[detail.status] || Info
+                return <Icon className={"w-4 h-4"} />
+              })()}
               {detail.status.replace(/_/g, " ")}
             </span>
           </div>
@@ -310,7 +412,7 @@ export default function RecoveryCasePage() {
       {detail.status === "STOPPED" && (
         <div className="mb-6 rounded-xl border border-red-500/40 bg-red-500/10 p-4">
           <div className="flex items-center gap-2">
-            <span className="text-lg">🛑</span>
+            <ShieldAlert className="h-5 w-5 text-red-400" />
             <div>
               <p className="text-sm font-semibold text-red-400">
                 STOPPED (User Opt-Out)
@@ -337,7 +439,9 @@ export default function RecoveryCasePage() {
         <div className="mb-6">
           <SimulateMessageControls
             caseId={caseId}
+            amount={detail.original_amount}
             onApplied={() => setReloadKey((k) => k + 1)}
+            onTyping={setTyping}
           />
         </div>
       )}
@@ -349,13 +453,18 @@ export default function RecoveryCasePage() {
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`whitespace-nowrap rounded-t-lg px-4 py-2.5 text-sm font-medium transition-colors ${
+              className={`whitespace-nowrap rounded-t-lg px-4 py-2.5 text-sm font-medium transition-colors inline-flex items-center gap-2 ${
                 activeTab === tab.id
                   ? "border-b-2 border-blue-500 bg-slate-900 text-slate-100"
                   : "text-slate-400 hover:text-slate-200 hover:bg-slate-900/50"
               }`}
             >
-              {tab.icon} {tab.label}
+              <tab.icon
+                className={`w-3.5 h-3.5 ${
+                  tab.id === "hardstops" ? "text-rose-400" : ""
+                }`}
+              />
+              {tab.label}
             </button>
           ))}
         </div>
@@ -453,11 +562,30 @@ export default function RecoveryCasePage() {
         )}
 
         {!tabLoading && activeTab === "conversation" && (
-          <ConversationHistory conversations={conversations} />
+          <div className="space-y-3">
+            <div className="flex items-center justify-end">
+              <button
+                onClick={startConversation}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-medium text-emerald-300 hover:bg-emerald-500/20"
+              >
+                <MessageSquare className="w-3.5 h-3.5" />
+                Start first-touch message
+              </button>
+            </div>
+            <ConversationHistory
+              conversations={conversations}
+              onQuickReply={handleQuickReply}
+              typing={typing}
+            />
+          </div>
         )}
 
         {!tabLoading && activeTab === "emails" && (
-          <EmailHistory emails={emails} />
+          <EmailHistory
+            emails={emails}
+            onGenerateEmail={handleGenerateEmail}
+            onPayNow={handleEmailPayNow}
+          />
         )}
 
         {!tabLoading && activeTab === "hardstops" && (

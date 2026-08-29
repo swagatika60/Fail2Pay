@@ -36,6 +36,12 @@ fail2pay/
 │       └── utils/      # Utility functions
 │
 └── tests/              # Backend tests
+
+# Root
+Dockerfile              # Multi-stage production build (frontend + backend)
+.dockerignore
+deploy/
+└── entrypoint.sh       # Container startup: alembic migrations + uvicorn
 ```
 
 ## What's Built
@@ -51,6 +57,12 @@ fail2pay/
 - ✅ Email delivery service (dispatches, receipts, retries)
 - ✅ Recovery orchestrator: policy engine, intent detection, promise lifecycle, installment workflows, hard stops
 - ✅ Scheduler background engine, simulation routes, audit logging
+- ✅ Deterministic decision audit trail + policy inspector endpoint (`GET /api/cases/{id}/policy-trace`)
+- ✅ Explicit opt-out & stopping rules (`POST /api/cases/{id}/simulate-message`)
+- ✅ Payment degradation & mandate retry sequencer (`GET /api/plans/{id}/retry-sequencer`)
+- ✅ Batch recovery simulation + verified impact ledger (`GET /api/simulation/impact-ledger`) — only captured payments count as recovered revenue
+- ✅ Contextual & empathetic agent engine (`agent_engine.py` + `agent_flow.py`): human-like copy, structured quick-reply/payment-card/language payloads, split-EMI plans, promise reminders, wrong-bill/human escalation
+- ✅ Synchronized transactional HTML email generation (`POST /api/cases/{id}/agent-initial`, `POST /api/cases/{id}/generate-email`)
 - ✅ Database initialization support
 - ✅ Environment variable configuration
 
@@ -60,13 +72,17 @@ fail2pay/
 - ✅ Backend status indicator (Connected/Offline)
 - ✅ Revenue dashboard with metrics, revenue-flow chart, recovery table
 - ✅ Case detail page (timeline, promises, payment plans, conversations, emails, hard stops)
+- ✅ WhatsApp Business-style conversation thread (sender badges w/ verified tick, quick-reply buttons, payment link cards, typing indicator)
+- ✅ HTML email preview rendering in the Emails tab
+- ✅ Interactive multi-turn simulate-customer-reply controls (quick replies, run full dialogue cycle)
+- ✅ Policy inspector modal, retry sequencer panel, verified impact ledger / funnel UI
 - ✅ Recovery simulation page
 - ✅ Health check service
 - ✅ TypeScript throughout
 
 ### Tests
 
-- ✅ 902 tests passing across 29 test files (health, models, payments, webhooks, WhatsApp, email, PDF invoices, recovery workflow, batch simulation, revenue map, recovery settings, resilience)
+- ✅ 978 tests passing across the backend suite (health, models, payments, webhooks, WhatsApp, email, PDF invoices, recovery workflow, batch simulation, revenue map, recovery settings, policy trace, simulation/messaging, impact ledger, agent engine)
 
 ## Database Models
 
@@ -118,6 +134,40 @@ npm run dev
 
 The app runs at `http://localhost:5173` and proxies `/api/*` to the backend.
 
+### Docker (production build)
+
+The repo ships a multi-stage `Dockerfile` that builds the React frontend into static
+assets, installs the backend dependencies, and produces a single runtime image that
+**serves both the API and the built frontend** (no separate `npm run dev` needed).
+
+| Stage | Base | Purpose |
+|-------|------|---------|
+| `frontend-build` | `node:22-alpine` | `npm ci` + `npm run build` → `dist/` |
+| `backend-deps` | `python:3.12-slim` | install backend requirements |
+| `runtime` | `python:3.12-slim` | FastAPI + serves `frontend/dist`, runs migrations via entrypoint |
+
+On container startup, `deploy/entrypoint.sh` runs `alembic upgrade head` (set
+`FAIL2PAY_SKIP_MIGRATIONS=1` to skip) then launches uvicorn on `0.0.0.0:8000`.
+
+```bash
+# 1. Build the image
+docker build -t fail2pay .
+
+# 2. Run it, mounting your .env (needs DATABASE_URL + API keys)
+docker run -d --rm --name fail2pay \
+  --env-file .env \
+  -p 8000:8000 \
+  fail2pay
+
+# 3. Open the app
+#    http://localhost:8000    (frontend + API)
+#    http://localhost:8000/health
+```
+
+The container exposes port `8000` with a built-in healthcheck. There is currently
+**no** `docker-compose.yml`; if you want to run PostgreSQL alongside the app with a
+single `docker compose up`, add one (or ask — it can be added).
+
 ### Tests
 
 ```bash
@@ -158,6 +208,9 @@ EMAIL_API_KEY=
 - ✅ Database models and schemas ready
 - ✅ Razorpay, WhatsApp, Email integrations wired
 - ✅ Automated recovery workflows (orchestrator, policy engine, scheduler)
-- ✅ All 902 tests passing
+- ✅ Contextual & empathetic agent engine (WhatsApp Business thread UI, split-EMI plans, human escalation, synchronized email threads)
+- ✅ Decision audit trail, explicit opt-out/stopping rules, retry sequencer, verified impact ledger
+- ✅ Multi-stage production Docker build (Dockerfile + deploy/entrypoint.sh, healthcheck)
+- ✅ All 978 tests passing
 
 **Next steps:** live channel credentials (Razorpay/WhatsApp/Email), PostgreSQL persistence, AI risk-scoring volumes, production deployment.

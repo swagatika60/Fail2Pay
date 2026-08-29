@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react"
+import { memo, useMemo, type CSSProperties } from "react"
 import {
   Area,
   AreaChart,
@@ -6,9 +6,6 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
-  Funnel,
-  FunnelChart,
-  LabelList,
   Legend,
   Pie,
   PieChart,
@@ -18,6 +15,7 @@ import {
   YAxis,
 } from "recharts"
 import type { RevenueMap } from "../../types/analytics"
+import { formatINR } from "../../lib/format"
 
 interface Props {
   data: RevenueMap
@@ -29,14 +27,6 @@ const TOOLTIP_STYLE: CSSProperties = {
   borderRadius: "8px",
   color: "#e2e8f0",
   fontSize: "13px",
-}
-
-function formatINR(paise: number): string {
-  const rupees = paise / 100
-  if (rupees >= 10000000) return `₹${(rupees / 10000000).toFixed(2)} Cr`
-  if (rupees >= 100000) return `₹${(rupees / 100000).toFixed(2)} L`
-  if (rupees >= 1000) return `₹${(rupees / 1000).toFixed(1)} K`
-  return `₹${rupees.toLocaleString("en-IN")}`
 }
 
 const FUNNEL_COLORS: Record<string, string> = {
@@ -63,8 +53,12 @@ const RISK_COLORS: Record<string, string> = {
 const CHART_TICK = { fill: "#94a3b8", fontSize: 10.5 }
 const CHART_TICK_Y = { fill: "#94a3b8", fontSize: 11 }
 
-export default function RevenueMapAnalytics({ data }: Props) {
+export default memo(function RevenueMapAnalytics({ data }: Props) {
   const empty = data.cases_count === 0
+  const attemptedUnfulfilled = Math.max(
+    data.attempted_recovery - data.recovered_revenue,
+    0,
+  )
 
   return (
     <div className="space-y-6">
@@ -112,7 +106,9 @@ export default function RevenueMapAnalytics({ data }: Props) {
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
               Attempted, not yet collected
             </p>
-            <p className="mt-1 text-2xl font-bold text-slate-200">{formatINR(data.attempted_unfulfilled)}</p>
+            <p className="mt-1 text-2xl font-bold text-slate-200">
+              {formatINR(attemptedUnfulfilled)}
+            </p>
             <p className="mt-1 text-xs text-slate-400">Engaged but money has not arrived</p>
           </div>
         </div>
@@ -127,30 +123,8 @@ export default function RevenueMapAnalytics({ data }: Props) {
             "Entered Recovery" is the pool recovery engaged, while "Verified
             Recovered" is only captured payments.
           </p>
-          <div className="mt-4 h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <FunnelChart>
-                <Tooltip
-                  formatter={(value) =>
-                    typeof value === "number" ? formatINR(value) : String(value)
-                  }
-                  labelFormatter={(label) => String(label)}
-                  contentStyle={TOOLTIP_STYLE}
-                />
-                <Funnel dataKey="amount" data={data.funnel} isAnimationActive={false}>
-                  <LabelList
-                    position="right"
-                    fill="#cbd5e1"
-                    stroke="none"
-                    dataKey="name"
-                    fontSize={12}
-                  />
-                  {data.funnel.map((stage) => (
-                    <Cell key={stage.name} fill={FUNNEL_COLORS[stage.name] ?? "#475569"} />
-                  ))}
-                </Funnel>
-              </FunnelChart>
-            </ResponsiveContainer>
+          <div className="mt-4">
+            <RevenueFunnel stages={data.funnel} />
           </div>
           <p className="mt-2 text-xs text-slate-500">
             "Attempted" is the money pool contacted during recovery; "Verified
@@ -327,6 +301,111 @@ export default function RevenueMapAnalytics({ data }: Props) {
         </div>
       </div>
     </div>
+  )
+})
+
+const BAND_HEIGHT = 46
+const BAND_GAP = 10
+const PAD_TOP = 6
+const PAD_BOTTOM = 8
+const VIEW_W = 360
+
+/**
+ * A dependency-light SVG revenue funnel.
+ *
+ * Each stage renders as a centered trapezoid whose width is proportional to its
+ * amount relative to the largest stage. The stage name and its formatted amount
+ * are drawn mid-band with `textAnchor="middle"` so they always sit centered
+ * inside the polygon. A `viewBox` + `preserveAspectRatio=meet` keeps the whole
+ * figure responsive (scales to the card width) without clipping, and the height
+ * is derived from the stage count so tall funnels grow vertically.
+ */
+function RevenueFunnel({ stages }: { stages: { name: string; amount: number }[] }) {
+  const hasData = !!stages && stages.length > 0
+
+  const bands = useMemo(() => {
+    if (!hasData) return []
+    const maxAmount = Math.max(...stages.map((s) => s.amount), 1)
+    const sidePad = 26
+    const usable = VIEW_W - sidePad * 2
+    let y = PAD_TOP
+
+    const widths = stages.map((s) =>
+      (s.amount / maxAmount) * usable,
+    )
+
+    return stages.map((stage, i) => {
+      const topW = Math.max(widths[i], 10)
+      const botW = i < stages.length - 1 ? Math.max(widths[i + 1], 10) : topW * 0.72
+      const yTop = y
+      const yBot = y + BAND_HEIGHT
+      y += BAND_HEIGHT + BAND_GAP
+      const cx = VIEW_W / 2
+      const pts = [
+        `${cx - topW / 2},${yTop}`,
+        `${cx + topW / 2},${yTop}`,
+        `${cx + botW / 2},${yBot}`,
+        `${cx - botW / 2},${yBot}`,
+      ].join(" ")
+      return {
+        stage,
+        pts,
+        cy: (yTop + yBot) / 2,
+        fill: FUNNEL_COLORS[stage.name] ?? "#475569",
+      }
+    })
+  }, [stages, hasData])
+
+  if (!hasData) {
+    return (
+      <div className="flex h-40 items-center justify-center rounded-lg bg-slate-800/40 text-sm text-slate-500">
+        No funnel data yet
+      </div>
+    )
+  }
+
+  const viewH = PAD_TOP + stages.length * (BAND_HEIGHT + BAND_GAP) + PAD_BOTTOM
+
+  return (
+    <svg
+      viewBox={`0 0 ${VIEW_W} ${viewH}`}
+      className="h-auto w-full"
+      preserveAspectRatio="xMidYMid meet"
+      role="img"
+      aria-label="Revenue funnel"
+    >
+      {bands.map((b) => (
+        <g key={b.stage.name}>
+          <polygon
+            points={b.pts}
+            fill={b.fill}
+            fillOpacity={0.32}
+            stroke={b.fill}
+            strokeWidth={1.5}
+          />
+          <text
+            x={VIEW_W / 2}
+            y={b.cy - 1}
+            textAnchor="middle"
+            fill="#e2e8f0"
+            fontSize={12}
+            fontWeight={600}
+          >
+            {b.stage.name}
+          </text>
+          <text
+            x={VIEW_W / 2}
+            y={b.cy + 13}
+            textAnchor="middle"
+            fill={b.fill}
+            fontSize={12}
+            fontWeight={700}
+          >
+            {formatINR(b.stage.amount)}
+          </text>
+        </g>
+      ))}
+    </svg>
   )
 }
 

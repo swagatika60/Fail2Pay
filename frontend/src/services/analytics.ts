@@ -13,6 +13,30 @@ import type {
   VerifiedImpactLedger,
 } from "../types/analytics"
 
+interface CacheEntry<T> {
+  data: T
+  fetchedAt: number
+}
+
+const TTL_MS = 1000 * 60 * 5
+
+function cached<T>(key: string, cache: Map<string, CacheEntry<T>>, fetcher: () => Promise<T>): Promise<T> {
+  const entry = cache.get(key)
+  if (entry && Date.now() - entry.fetchedAt < TTL_MS) {
+    return Promise.resolve(entry.data)
+  }
+  return fetcher().then((data) => {
+    cache.set(key, { data, fetchedAt: Date.now() })
+    return data
+  })
+}
+
+const detailCache = new Map<string, CacheEntry<RecoveryCaseDetail>>()
+
+export function clearCaseDetailCache(caseId: string) {
+  detailCache.delete(caseId)
+}
+
 export async function fetchVerifiedImpactLedger(): Promise<VerifiedImpactLedger> {
   const response = await fetch("/api/simulation/impact-ledger")
   if (!response.ok) throw new Error("Failed to fetch impact ledger")
@@ -40,13 +64,20 @@ export async function fetchRecoveryCases(): Promise<RecoveryCaseSummary[]> {
 
 export async function fetchRecoveryCaseDetail(
   caseId: string,
+  opts: { bypass?: boolean } = {},
 ): Promise<RecoveryCaseDetail> {
+  if (!opts.bypass) {
+    return cached(caseId, detailCache, () =>
+      fetch(`/api/analytics/recovery-cases/${caseId}`).then(async (response) => {
+        if (!response.ok) throw new Error("Failed to fetch case detail")
+        return response.json() as Promise<RecoveryCaseDetail>
+      }),
+    )
+  }
   const response = await fetch(`/api/analytics/recovery-cases/${caseId}`)
   if (!response.ok) throw new Error("Failed to fetch case detail")
   return response.json()
-}
-
-export async function fetchCasePromises(caseId: string): Promise<PaymentPromise[]> {
+}export async function fetchCasePromises(caseId: string): Promise<PaymentPromise[]> {
   const response = await fetch(`/api/cases/${caseId}/promises`)
   if (!response.ok) throw new Error("Failed to fetch promises")
   return response.json()
