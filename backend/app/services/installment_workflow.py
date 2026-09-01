@@ -32,10 +32,7 @@ from app.crud.payment_plan import (
     update_plan_status,
 )
 from app.crud.recovery_case import get_recovery_case
-from app.crud.scheduled_action import (
-    cancel_pending_actions_for_case,
-    create_scheduled_action,
-)
+from app.crud.scheduled_action import create_scheduled_action
 from app.models.installment import InstallmentStatus
 from app.models.payment_plan import PaymentPlanStatus
 from app.models.recovery_case import RecoveryStatus
@@ -299,20 +296,24 @@ def record_installment_payment(
             # Mark plan as COMPLETED
             update_plan_status(db, plan.id, PaymentPlanStatus.COMPLETED.value)
 
-            # Mark case as RECOVERED
-            case.status = RecoveryStatus.RECOVERED
-            case.closed_at = datetime.now(timezone.utc)
+            # Mark case as RECOVERED + run the deterministic finalizer: fulfil
+            # any ACTIVE promise, cancel pending actions/emails, expire stale
+            # payment links and mark invoices PAID (idempotent).
+            from app.services.workflow_engine import finalize_recovered_case
 
-            # Cancel all future actions
-            cancelled = cancel_pending_actions_for_case(
-                db, case.id, reason="payment_plan_completed"
+            case.remaining_amount = max(0, case.original_amount - case.recovered_amount)
+            finalize_result = finalize_recovered_case(
+                db, case, reason="installment_plan_completed"
             )
+            cancelled = finalize_result["actions_cancelled"]
 
             logger.info(
-                "Payment plan COMPLETED: case=%s, plan=%s, cancelled=%d actions",
+                "Payment plan COMPLETED: case=%s, plan=%s, cancelled=%d actions, "
+                "finalized=%s",
                 case.id,
                 plan.id,
                 cancelled,
+                finalize_result["status"],
             )
 
             return {

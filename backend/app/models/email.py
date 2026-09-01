@@ -14,6 +14,7 @@ class EmailDeliveryStatus(str, enum.Enum):
     DELIVERED = "delivered"
     BOUNCED = "bounced"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class EmailType(str, enum.Enum):

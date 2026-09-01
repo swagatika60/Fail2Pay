@@ -9,6 +9,7 @@ Provides detailed data for a recovery case:
 """
 
 import logging
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,10 +17,34 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.models.recovery_case import RecoveryStatus
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/cases", tags=["case-detail"])
+
+
+@router.get("/{case_id}/agent-steps")
+def get_case_agent_steps(case_id: UUID, db: Session = Depends(get_db)):
+    """Agent Thought Stream for a recovery case (persisted reasoning chain).
+
+    Returns the ordered reasoning steps (Trigger → Diagnosis → Policy →
+    Action → Ledger) that drove this case, plus light telemetry. Mirrors what
+    is broadcast live over ``/ws/cases/{case_id}``.
+    """
+    from app.models.recovery_case import RecoveryCase
+    from app.services import agent_steps
+
+    case = db.get(RecoveryCase, case_id)
+    if not case:
+        raise HTTPException(status_code=404, detail="Recovery case not found")
+
+    steps = agent_steps.get_case_steps(db, case_id)
+    return {
+        "case_id": str(case_id),
+        "steps": steps,
+        "summary": agent_steps.summarize_steps(steps),
+    }
 
 
 @router.get("/{case_id}/promises")
@@ -235,6 +260,56 @@ def get_case_timeline(case_id: UUID, db: Session = Depends(get_db)):
     return get_recovery_timeline(db, case_id)
 
 
+@router.get("/{case_id}/schedule")
+def get_case_schedule(case_id: UUID, db: Session = Depends(get_db)):
+    """Get the automated touchpoint / reminder queue for a recovery case.
+
+    Returns the full scheduled-action state plus the *next pending* touchpoint
+    with a human-friendly label, so the ops console can show a countdown or a
+    scheduled timestamp (e.g. "Next Ping: Tomorrow at 10:00 AM").
+    """
+    from datetime import datetime, timezone
+
+    from app.services.scheduler import get_schedule_status
+
+    status = get_schedule_status(db, case_id)
+
+    pending = status["pending"]
+    next_action = None
+    if pending:
+        def _as_dt(s):
+            try:
+                dt = datetime.fromisoformat(s)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
+            except (ValueError, TypeError):
+                return None
+
+        due = [p for p in pending if _as_dt(p["scheduled_for"])]
+        due.sort(key=lambda p: _as_dt(p["scheduled_for"]) or datetime.max.replace(tzinfo=timezone.utc))
+        earliest = due[0] if due else None
+        if earliest:
+            next_action = {
+                "action_id": earliest["id"],
+                "action_type": earliest["action_type"],
+                "attempt_number": earliest["attempt_number"],
+                "channel": earliest["channel"],
+                "scheduled_for": earliest["scheduled_for"],
+                "due": bool(_as_dt(earliest["scheduled_for"]).replace(tzinfo=None) <= datetime.now(timezone.utc).replace(tzinfo=None)),
+            }
+
+    return {
+        "case_id": str(case_id),
+        "total_actions": status["total_actions"],
+        "pending_count": len(status["pending"]),
+        "executed_count": len(status["executed"]),
+        "cancelled_count": len(status["cancelled"]),
+        "next_action": next_action,
+        "pending": status["pending"],
+    }
+
+
 # ============================================================
 # POLICY TRACE / DECISION AUDIT TRAIL
 # ============================================================
@@ -363,6 +438,7 @@ def _count_layers(chain: list[dict]) -> dict:
 class SimulateMessageRequest(BaseModel):
     trigger: str  # one of: promise, stop, wrong_bill, installments, pay_link, support, language
     message: str | None = None  # optional override text
+    promise_date: datetime | None = None  # for "Choose a Date" promise option
 
 
 # mirror of the hard stop condition label we surface to judges
@@ -370,6 +446,23 @@ STOP_GUARDRAIL = (
     "Policy Guardrail: Opt-out detected. "
     "All automated outreach and retries halted immediately."
 )
+
+
+def _promote_status(case, target: RecoveryStatus) -> None:
+    """Promote a case toward ENGAGED / PAYMENT_PLAN during an active dialogue.
+
+    Inbound replies and negotiations must never exhaust the outreach attempt
+    counter — instead the case moves to an engaged state as long as it has not
+    already committed further (a promise or plan) and is not terminal.
+
+    Plan creation commits the case as PROMISED (an existing invariant), so the
+    explicit PAYMENT_PLAN membership still wins on the console route; any other
+    committed state (PROMISED -> ENGAGED, etc.) is never regressed.
+    """
+    if case.status in (RecoveryStatus.AT_RISK, RecoveryStatus.RECOVERY_IN_PROGRESS):
+        case.status = target
+    elif target == RecoveryStatus.PAYMENT_PLAN and case.status == RecoveryStatus.PROMISED:
+        case.status = target
 
 
 def _detect_language_request(message: str) -> str | None:
@@ -447,12 +540,18 @@ def simulate_customer_message(
     trigger = body.trigger or "promise"
     TRIGGER_TEXT = {
         "promise": "Kal pakka karunga",
+        "pay_later": "Can I pay later?",
+        "promise_tomorrow": "I can pay tomorrow at 11 AM",
+        "promise_3days": "I can pay in 3 days",
+        "promise_custom": "I'd like to choose a promise date",
         "stop": "Stop messaging me",
         "wrong_bill": "Wrong bill amount, please check",
         "installments": "Can I pay in installments?",
         "pay_link": "Please send me the payment link",
         "support": "I need to talk to support",
         "language": "Hindi mein baat karein",
+        "language_hi": "Hindi mein baat karein",
+        "language_en": "Switch to English please",
         "pay_now": "I want to pay now",
         "split_2": "Can I pay in 2 installments?",
         "split_4": "Can I pay in 4 installments?",
@@ -485,20 +584,35 @@ def simulate_customer_message(
         ).scalars().first()
     )
     if conversation:
-        db.add(
-            ConversationMessage(
-                conversation_id=conversation.id,
-                direction="inbound",
-                content=message_text,
-                message_type="text",
-                extra_data={
-                    "source": "demo_simulation",
-                    "from_phone": customer.phone if customer else None,
-                    "simulated_trigger": trigger,
-                },
-            )
+        inbound_msg = ConversationMessage(
+            conversation_id=conversation.id,
+            direction="inbound",
+            content=message_text,
+            message_type="text",
+            extra_data={
+                "source": "demo_simulation",
+                "from_phone": customer.phone if customer else None,
+                "simulated_trigger": trigger,
+            },
         )
+        db.add(inbound_msg)
         db.commit()
+        db.refresh(inbound_msg)
+
+        # Broadcast the inbound customer message via WebSocket so the live
+        # dashboard shows the customer bubble instantly (not just after the
+        # agent reply triggers an API refresh).
+        from app.services.realtime import publish_message_event
+        publish_message_event(
+            conversation_id=str(conversation.id),
+            case_id=str(case.id),
+            message_id=str(inbound_msg.id),
+            direction="inbound",
+            content=message_text,
+            message_type="text",
+            created_at=inbound_msg.created_at.isoformat() if inbound_msg.created_at else "",
+            extra_data=inbound_msg.extra_data,
+        )
 
     # --- Step 2: audit the customer reply ---
     log_customer_replied(
@@ -526,6 +640,23 @@ def simulate_customer_message(
         message_text,
     )
 
+    # Broadcast typing indicator + reasoning stream to live dashboard
+    from app.services.realtime import (
+        publish_typing_indicator,
+        publish_reasoning_stream,
+    )
+
+    publish_typing_indicator(case_id=str(case.id), is_typing=True)
+
+    publish_reasoning_stream(
+        case_id=str(case.id),
+        stage="INTENT_PARSING",
+        label=f"Intent: {detected_intent.replace('_', ' ').title()}",
+        detail=f"Confidence: {intent_response.result.confidence:.2f}, Source: {intent_response.source}",
+        confidence=intent_response.result.confidence,
+        metadata={"intent": detected_intent, "source": intent_response.source, "message": message_text[:200]},
+    )
+
     # --- Step 4: deterministic handling per intent (policy layer) ---
     guardrail_note = None
     escalated_to_human = False
@@ -534,6 +665,12 @@ def simulate_customer_message(
     recovered = False
     hard_stopped = False
     reply_intent = detected_intent
+    promise_at = None
+    pay_today = None
+    nested_split_details = None
+    # Attempt cap reached -> the merchant drives the case manually. Automation
+    # (reminders) stays stopped and manual actions never re-arm it.
+    monitor_mode = case.attempt_count >= case.max_attempts
 
     # Track the preferred language (persisted on the case) so the agent keeps
     # replying in Hinglish once the customer switches, no matter what they say.
@@ -559,10 +696,37 @@ def simulate_customer_message(
     db.commit()
     language = current_lang
 
+    # Record whether this conversational turn was an explicit free-text language
+    # switch (e.g. "Hindi mein baat karein"). Used below so the reply is routed
+    # to the LANGUAGE_SWITCHED acknowledgment instead of falling through to the
+    # UNCLEAR payment-link branch (which would re-spam the split card). Chip
+    # triggers (language_hi/language_en/support) are handled deterministically
+    # below and are excluded here.
+    free_text_language_switch = bool(
+        message_text and _detect_language_request(message_text) is not None
+    ) and not trigger.startswith("language_")
+
+
     if trigger in ("support",):
         reply_intent = "SUPPORT"
     elif split_count and detected_intent == "PAYMENT_PLAN_REQUEST":
         reply_intent = "PAYMENT_PLAN_REQUEST"
+    elif trigger == "pay_later":
+        # "Pay Later" is a promise-to-pay: record a real Promise + reminder.
+        detected_intent = "PROMISE_TO_PAY"
+        reply_intent = "PROMISE_TO_PAY"
+    elif trigger in ("promise_tomorrow", "promise_3days", "promise_custom"):
+        # Contextual promise-date options from the "Can I pay later?" chips.
+        # These resolve to the same verified promise pipeline; the chosen date
+        # is persisted deterministically by the handling block below.
+        detected_intent = "PROMISE_TO_PAY"
+        reply_intent = "PROMISE_TO_PAY"
+    elif trigger.startswith("language_") or free_text_language_switch:
+        # Language switch (chip or free text like "Hindi mein baat karein"):
+        # deterministic ack in the chosen language, no side effects (the case
+        # already persisted the preference above). Free text is routed here
+        # instead of falling through to the UNCLEAR/link split-card branch.
+        reply_intent = "LANGUAGE_SWITCHED"
 
     # Block further outreach once the case is hard-stopped.
     if (
@@ -612,23 +776,40 @@ def simulate_customer_message(
 
     # --- Pay Now: full verified recovery ---
     if trigger in ("pay_now", "pay_link"):
-        from app.crud.scheduled_action import cancel_pending_actions_for_case
+        from app.services.workflow_engine import finalize_recovered_case
 
         if case.remaining_amount > 0:
-            from datetime import datetime, timezone as _tz
-            case.recovered_amount = case.original_amount
-            case.remaining_amount = 0
-            case.status = RecoveryStatus.RECOVERED
-            case.closed_at = datetime.now(_tz.utc)
-            db.commit()
-            cancel_pending_actions_for_case(
-                db, case.id, reason="payment_recovered"
-            )
+            finalize_recovered_case(db, case, reason="simulate_pay_now")
             from app.services.audit_logger import log_payment_recovered
             log_payment_recovered(db, case.id, case.original_amount)
             recovered = True
             reply_intent = "PAYMENT_LINK_REQUEST"
             db.refresh(case)
+        else:
+            # Already fully settled — a pay request on a recovered case is just
+            # a "you're all paid up" acknowledgement, never a new payment card.
+            recovered = True
+            reply_intent = "ALREADY_PAID"
+            db.refresh(case)
+
+    # Terminal guard: a late reply on an already-closed case must NOT spawn a
+    # promise, plan, escalation or payment card. It only acknowledges the
+    # closed state.
+    if (
+        not recovered
+        and case.status in (RecoveryStatus.RECOVERED, RecoveryStatus.LOST)
+    ):
+        recovered = True
+        reply_intent = (
+            "ALREADY_PAID"
+            if case.status == RecoveryStatus.RECOVERED
+            else "STOP_REQUEST"
+        )
+        guardrail_note = (
+            "Policy Guardrail: Case is closed. No further outreach or "
+            "payment requests are permitted."
+        )
+        db.refresh(case)
 
     if not recovered:
         if detected_intent == "STOP_REQUEST":
@@ -648,15 +829,143 @@ def simulate_customer_message(
             db.refresh(case)
         elif detected_intent == "PROMISE_TO_PAY":
             from app.services.promise import create_promise_for_case
-            create_promise_for_case(db, case.id, customer_message=message_text)
-            promise_scheduled = agent_flow.schedule_reminder_tomorrow(db, case.id)
+
+            # Deterministic promised date from the chosen option — persisted into
+            # the Promise record so the UI shows the exact commitment.
+            if trigger == "promise_tomorrow":
+                promise_at = agent_flow.promise_date_for("tomorrow")
+            elif trigger == "promise_3days":
+                promise_at = agent_flow.promise_date_for("3days")
+            elif trigger == "promise_custom":
+                promise_at = agent_flow.promise_date_for("custom", body.promise_date)
+            else:
+                promise_at = None
+
+            prom = create_promise_for_case(
+                db,
+                case.id,
+                customer_message=message_text,
+                promised_date=promise_at,
+                count_attempt=not monitor_mode,
+            )
+            if prom.get("status") == "created":
+                if monitor_mode:
+                    # Attempt cap reached — merchant drives the case manually.
+                    # Record the promise but NEVER queue a new automated
+                    # reminder: a manual action must not restart the automatic
+                    # reminder sequence.
+                    promise_scheduled = {
+                        "skipped": True,
+                        "reason": "monitor_mode_max_attempts",
+                        "promised_date": promise_at.isoformat() if promise_at else None,
+                    }
+                elif promise_at is not None:
+                    promise_scheduled = agent_flow.schedule_reminder_tomorrow(
+                        db, case.id, at=promise_at
+                    )
+                else:
+                    promise_scheduled = agent_flow.schedule_reminder_tomorrow(db, case.id)
             db.refresh(case)
         elif detected_intent == "PAYMENT_PLAN_REQUEST":
             count = split_count or 2
-            split_plan = agent_flow.create_split_plan(db, case, split_count=count, days_apart=15)
-            reply_intent = "PAYMENT_PLAN_REQUEST"
-            db.refresh(case)
-            amount = case.original_amount
+            # Rule 2 (nested installments): a free-text "I want to pay Part 1
+            # (₹499) now in 2 installments" picks a specific part of an existing
+            # plan and re-splits it into a new, smaller breakdown. Paranoid that
+            # free text never renders the full-balance UNCLEAR card.
+            nested = (
+                agent_engine.parse_nested_split(message_text)
+                if split_count is None
+                else None
+            )
+            if nested:
+                part_amount = nested["amount_paise"]
+                part_count = nested["count"]
+                amounts = agent_engine.calculate_installments(part_amount, part_count)
+                pay_today = amounts[0]
+                nested_split_details = agent_engine.split_plan_payload(
+                    part_amount, count=part_count
+                )
+                split_count = part_count
+                reply_intent = "PAYMENT_PLAN_REQUEST"
+                _promote_status(case, RecoveryStatus.PAYMENT_PLAN)
+                db.commit()
+                db.refresh(case)
+
+                # Broadcast the sub-split plan update to live dashboards
+                from app.services.realtime import (
+                    publish_payment_plan_updated,
+                    publish_plan_modification,
+                    publish_case_state_updated,
+                )
+                nested_plan_payload = agent_engine._build_payment_plan_payload(
+                    total_amount_paise=part_amount,
+                    count=part_count,
+                    case_id=str(case.id),
+                )
+                publish_payment_plan_updated(
+                    case_id=str(case.id),
+                    plan=nested_plan_payload,
+                    installment_breakdown=nested_split_details,
+                    policy_action={
+                        "increment_attempt_counter": False,
+                        "next_state": "PAYMENT_PLAN_PENDING",
+                    },
+                    action="sub_split",
+                )
+                publish_plan_modification(
+                    case_id=str(case.id),
+                    new_count=part_count,
+                    modification_type="sub_split",
+                    customer_message=message_text,
+                )
+                publish_case_state_updated(
+                    case_id=str(case.id),
+                    new_status="PAYMENT_PLAN",
+                    remaining_amount=case.remaining_amount,
+                )
+
+                # Analytics: log the sub-split event
+                from app.services.audit_logger import (
+                    log_sub_split_created,
+                    log_negotiation_pattern,
+                )
+                from app.services.agent_engine import assess_sentiment
+
+                sentiment = assess_sentiment(message_text)
+                log_sub_split_created(
+                    db,
+                    case.id,
+                    part_number=nested["part"],
+                    part_amount=part_amount,
+                    sub_split_count=part_count,
+                    parent_count=2,  # Default parent count
+                    total_amount=case.original_amount,
+                    customer_message=message_text,
+                )
+                # Track negotiation pattern for sub-splits
+                log_negotiation_pattern(
+                    db,
+                    case.id,
+                    pattern_type="sub_split",
+                    total_negotiation_turns=case.attempt_count + 1,
+                    plan_changes=1,
+                    final_count=part_count,
+                    sentiment_history=[sentiment],
+                    outcome="ongoing",
+                )
+            else:
+                split_plan = agent_flow.create_split_plan(
+                    db, case, split_count=count, days_apart=15
+                )
+                reply_intent = "PAYMENT_PLAN_REQUEST"
+                # Rule 1 (dynamic amount): the payment card must carry the exact
+                # installment due today, never the full remaining balance.
+                pay_today = (split_plan or {}).get("amounts", [None])[0]
+                _promote_status(case, RecoveryStatus.PAYMENT_PLAN)
+                # create_split_plan commits the case as PROMISED; the plan state
+                # must win, so persist the promotion before refreshing.
+                db.commit()
+                db.refresh(case)
         elif detected_intent in ("QUESTION", "INVOICE_REQUEST") or trigger == "wrong_bill":
             # Wrong-bill / dispute -> escalate to human, pause follow-ups.
             escalated_to_human = True
@@ -664,33 +973,42 @@ def simulate_customer_message(
             case.extra_data = dict(case.extra_data or {})
             case.extra_data["escalated_to_human"] = True
             case.extra_data["escalation_reason"] = message_text
-            case.status = RecoveryStatus.RECOVERY_IN_PROGRESS
+            _promote_status(case, RecoveryStatus.ENGAGED)
             db.commit()
             db.refresh(case)
         else:
-            db.commit()
+            # SUPPORT / link / retry / unclear / informational turns are active
+            # negotiation: engage the case without consuming an outreach attempt.
+            wordy_intents = (
+                "SUPPORT",
+                "PAYMENT_LINK_REQUEST",
+                "PAYMENT_RETRY_REQUEST",
+                "UNCLEAR",
+                "INVOICE_REQUEST",
+            )
+            if reply_intent in wordy_intents or reply_intent == detected_intent:
+                _promote_status(case, RecoveryStatus.ENGAGED)
+                db.commit()
             db.refresh(case)
 
-    # --- Track attempts (outreach turns), unless terminal or language switch ---
-    # PROMISE_TO_PAY already counts an attempt via workflow_engine.record_attempt,
-    # so skip the manual increment there to avoid double counting.
-    if (
-        trigger != "language"
-        and detected_intent != "PROMISE_TO_PAY"
-        and case.status not in (RecoveryStatus.RECOVERED, RecoveryStatus.LOST)
-        and not recovered
-    ):
-        if case.attempt_count < case.max_attempts:
-            case.attempt_count += 1
-            db.commit()
-            db.refresh(case)
+    # NOTE: inbound replies / active negotiations intentionally do NOT increment
+    # the outreach attempt counter. Attempts advance only via real outbound
+    # outreach (record_attempt in the orchestrator / scheduler) and recorded
+    # promises — engagement instead promotes the case to ENGAGED / PAYMENT_PLAN.
 
     # --- Gather recent inbound history so repeated queries are acknowledged ---
+    # The just-persisted inbound message is EXCLUDED: acknowledgements must
+    # reflect PRIOR turns, otherwise even the first "Can I pay later?" counts as
+    # a repeat and the engine loops on "As mentioned earlier" instead of
+    # acknowledging and offering the promise-date options.
     history = []
     if conversation:
         recent_msgs = db.execute(
             select(ConversationMessage)
-            .where(ConversationMessage.conversation_id == conversation.id)
+            .where(
+                ConversationMessage.conversation_id == conversation.id,
+                ConversationMessage.id != inbound_msg.id,
+            )
             .order_by(ConversationMessage.created_at.desc())
             .limit(6)
         ).scalars().all()
@@ -707,19 +1025,46 @@ def simulate_customer_message(
     else:
         history = []
 
+    # --- Stream policy evaluation + diagnostic reasoning ---
+    remaining = case.remaining_amount
+    attempt_str = f"{case.attempt_count}/{case.max_attempts}"
+    publish_reasoning_stream(
+        case_id=str(case.id),
+        stage="POLICY_EVALUATION",
+        label=f"Attempt {attempt_str} · Remaining ₹{remaining // 100}",
+        detail=f"Active attempt {attempt_str} -> response dispatched",
+        confidence=0.95,
+        metadata={"attempt_count": case.attempt_count, "remaining": remaining},
+    )
+    status_val = case.status.value if hasattr(case.status, "value") else str(case.status)
+    publish_reasoning_stream(
+        case_id=str(case.id),
+        stage="DIAGNOSTIC_SYNC",
+        label=f"State: {status_val.replace('_', ' ').title()}",
+        detail=f"Updated state: {status_val}, Remaining: ₹{remaining // 100}",
+        confidence=0.98,
+        metadata={"status": status_val},
+    )
+
+    # Clear typing indicator before building reply
+    publish_typing_indicator(case_id=str(case.id), is_typing=False)
+
     # --- Step 5: build & persist the contextual Agent reply with action payload ---
     agent_payload = agent_engine.build_reply(
         case_id=str(case.id),
         customer_name=customer_name,
-        amount_paise=case.remaining_amount if recovered else amount,
+        amount_paise=case.remaining_amount,
         intent=reply_intent,
         invoice_id=invoice_id,
         language=language,
-        split_details=(split_plan or {}).get("split"),
+        split_details=(nested_split_details or (split_plan or {}).get("split")),
         split_count=split_count,
+        pay_today=pay_today if reply_intent == "PAYMENT_PLAN_REQUEST" else None,
         escalate_note=("Our billing desk has been notified. A revised "
                        "breakdown is on its way to your email.") if escalated_to_human else None,
         history=history,
+        promise_at=promise_at,
+        monitor_mode=monitor_mode,
     )
     reply_text = agent_payload["text"]
     agent_flow.persist_agent_reply(db, case, reply_text, agent_payload)

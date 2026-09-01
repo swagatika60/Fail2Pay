@@ -1,9 +1,10 @@
 """Tests for the No-Response Recovery Scheduler.
 
 Covers:
-- Default recovery sequence: T+0, T+4h, T+12h, T+28h, T+60h (5 actions)
-- Exponential backoff timing
-- Pre-reminder checks (payment, conversation, opt-out, status, max, deadline)
+- Default recovery sequence: T+0, T+4h, T+8h, T+16h, T+24h, T+48h (6 actions)
+- Spaced-out reminder cadence (absolute from T0)
+- Pre-reminder checks (payment settled/paid, conversation, opt-out, status, max, deadline)
+- Pre-send settlement check (payment already settled → cancel all remaining)
 - Customer response handling (cancel reminders, stop on request)
 - Customer stop keywords (English, Hindi, Hinglish)
 - Terminal state handling
@@ -153,14 +154,14 @@ def make_all_actions_due(case, db):
 
 
 class TestDefaultScheduleConfig:
-    def test_has_5_steps(self):
-        """Default schedule has 5 steps: initial + 4 reminders."""
-        assert len(DEFAULT_SCHEDULE_CONFIG) == 5
+    def test_has_6_steps(self):
+        """Default schedule has 6 steps: initial + 5 reminders."""
+        assert len(DEFAULT_SCHEDULE_CONFIG) == 6
 
-    def test_delays_are_exponential_backoff(self):
-        """Delays: 0, 4, 12, 28, 60 hours (exponential backoff)."""
+    def test_delays_are_spaced_out_cadence(self):
+        """Delays: 0, 4, 8, 16, 24, 48 hours (absolute from T0)."""
         delays = [s["delay_hours"] for s in DEFAULT_SCHEDULE_CONFIG]
-        assert delays == [0, 4, 12, 28, 60]
+        assert delays == [0, 4, 8, 16, 24, 48]
 
     def test_action_types_are_sequential(self):
         """Action types go from initial to final."""
@@ -170,6 +171,7 @@ class TestDefaultScheduleConfig:
             "reminder_1",
             "reminder_2",
             "reminder_3",
+            "reminder_4",
             "final_reminder",
         ]
 
@@ -185,8 +187,8 @@ class TestDefaultScheduleConfig:
 
 
 class TestScheduleRecoveryWorkflow:
-    def test_creates_5_actions(self):
-        """Default schedule creates 5 actions."""
+    def test_creates_6_actions(self):
+        """Default schedule creates 6 actions (initial + 5 reminders)."""
         db = TestSessionLocal()
         customer = create_test_customer(db)
         revenue_event = create_test_revenue_event(db, customer)
@@ -194,9 +196,9 @@ class TestScheduleRecoveryWorkflow:
 
         created = schedule_recovery_workflow(db, case)
 
-        assert len(created) == 5
+        assert len(created) == 6
         actions = get_actions_by_case(db, case.id)
-        assert len(actions) == 5
+        assert len(actions) == 6
         assert all(a.status == "pending" for a in actions)
         db.close()
 
@@ -228,7 +230,7 @@ class TestScheduleRecoveryWorkflow:
 
         actions = get_actions_by_case(db, case.id)
         assert actions[-1].action_type == "final_reminder"
-        assert actions[-1].attempt_number == 5
+        assert actions[-1].attempt_number == 6
         db.close()
 
     def test_initial_action_scheduled_for_now(self):
@@ -253,34 +255,44 @@ class TestScheduleRecoveryWorkflow:
         assert 3.5 <= delta.total_seconds() / 3600 <= 4.5
         db.close()
 
-    def test_reminder_2_12_hours_after_initial(self):
-        """Reminder 2 is ~12 hours after initial."""
+    def test_reminder_2_8_hours_after_initial(self):
+        """Reminder 2 is ~8 hours after initial."""
         db = TestSessionLocal()
         case, _ = setup_case_and_schedule(db)
 
         actions = get_actions_by_case(db, case.id)
         delta = actions[2].scheduled_for - actions[0].scheduled_for
-        assert 11.5 <= delta.total_seconds() / 3600 <= 12.5
+        assert 7.5 <= delta.total_seconds() / 3600 <= 8.5
         db.close()
 
-    def test_reminder_3_28_hours_after_initial(self):
-        """Reminder 3 is ~28 hours after initial."""
+    def test_reminder_3_16_hours_after_initial(self):
+        """Reminder 3 is ~16 hours after initial."""
         db = TestSessionLocal()
         case, _ = setup_case_and_schedule(db)
 
         actions = get_actions_by_case(db, case.id)
         delta = actions[3].scheduled_for - actions[0].scheduled_for
-        assert 27.5 <= delta.total_seconds() / 3600 <= 28.5
+        assert 15.5 <= delta.total_seconds() / 3600 <= 16.5
         db.close()
 
-    def test_final_reminder_60_hours_after_initial(self):
-        """Final reminder is ~60 hours after initial."""
+    def test_reminder_4_24_hours_after_initial(self):
+        """Reminder 4 is ~24 hours after initial."""
         db = TestSessionLocal()
         case, _ = setup_case_and_schedule(db)
 
         actions = get_actions_by_case(db, case.id)
         delta = actions[4].scheduled_for - actions[0].scheduled_for
-        assert 59.5 <= delta.total_seconds() / 3600 <= 60.5
+        assert 23.5 <= delta.total_seconds() / 3600 <= 24.5
+        db.close()
+
+    def test_final_reminder_48_hours_after_initial(self):
+        """Final reminder is ~48 hours after initial."""
+        db = TestSessionLocal()
+        case, _ = setup_case_and_schedule(db)
+
+        actions = get_actions_by_case(db, case.id)
+        delta = actions[5].scheduled_for - actions[0].scheduled_for
+        assert 47.5 <= delta.total_seconds() / 3600 <= 48.5
         db.close()
 
     def test_custom_schedule_config(self):
@@ -308,7 +320,7 @@ class TestScheduleRecoveryWorkflow:
         db = TestSessionLocal()
         case, created = setup_case_and_schedule(db)
 
-        assert len(created) == 5
+        assert len(created) == 6
         for item in created:
             assert "id" in item
             assert "action_type" in item
@@ -385,7 +397,7 @@ class TestProcessDueActions:
 
         results = process_due_actions(db)
 
-        assert results["cancelled"] == 5
+        assert results["cancelled"] == 6
         assert results["executed"] == 0
         db.close()
 
@@ -402,7 +414,7 @@ class TestProcessDueActions:
 
         results = process_due_actions(db)
 
-        assert results["cancelled"] == 5
+        assert results["cancelled"] == 6
         assert results["executed"] == 0
         db.close()
 
@@ -419,7 +431,7 @@ class TestProcessDueActions:
 
         results = process_due_actions(db)
 
-        assert results["cancelled"] == 5
+        assert results["cancelled"] == 6
         assert results["executed"] == 0
         db.close()
 
@@ -429,14 +441,14 @@ class TestProcessDueActions:
         customer = create_test_customer(db)
         revenue_event = create_test_revenue_event(db, customer)
         case = create_test_recovery_case(
-            db, customer, revenue_event, attempt_count=5, max_attempts=5
+            db, customer, revenue_event, attempt_count=6, max_attempts=6
         )
         schedule_recovery_workflow(db, case)
         make_all_actions_due(case, db)
 
         results = process_due_actions(db)
 
-        assert results["cancelled"] == 5
+        assert results["cancelled"] == 6
         assert results["executed"] == 0
         db.close()
 
@@ -454,7 +466,7 @@ class TestProcessDueActions:
 
         results = process_due_actions(db)
 
-        assert results["cancelled"] == 5
+        assert results["cancelled"] == 6
         assert results["executed"] == 0
         db.close()
 
@@ -475,7 +487,7 @@ class TestProcessDueActions:
 
         results = process_due_actions(db)
 
-        assert results["cancelled"] == 5
+        assert results["cancelled"] == 6
         assert results["executed"] == 0
         db.close()
 
@@ -485,7 +497,7 @@ class TestProcessDueActions:
         customer = create_test_customer(db)
         revenue_event = create_test_revenue_event(db, customer)
         case = create_test_recovery_case(
-            db, customer, revenue_event, attempt_count=5, max_attempts=5
+            db, customer, revenue_event, attempt_count=6, max_attempts=6
         )
         schedule_recovery_workflow(db, case)
 
@@ -497,7 +509,7 @@ class TestProcessDueActions:
 
         assert results["cancelled"] == 1
 
-        # All 5 should be cancelled
+        # All 6 should be cancelled
         all_actions = get_actions_by_case(db, case.id)
         assert all(a.status == "cancelled" for a in all_actions)
         db.close()
@@ -837,9 +849,9 @@ class TestHandleCustomerResponse:
         db = TestSessionLocal()
         case, _ = self._setup_case(db)
 
-        # Verify 5 pending actions
+        # Verify 6 pending actions
         actions = get_actions_by_case(db, case.id)
-        assert len([a for a in actions if a.status == "pending"]) == 5
+        assert len([a for a in actions if a.status == "pending"]) == 6
 
         handle_customer_response(db, case.id, "Stop")
 
@@ -1049,7 +1061,7 @@ class TestCancelAllActions:
 
         count = cancel_all_actions_for_case(db, case.id, reason="customer_opted_out")
 
-        assert count == 5
+        assert count == 6
         actions = get_actions_by_case(db, case.id)
         assert all(a.status == "cancelled" for a in actions)
         for a in actions:
@@ -1069,7 +1081,7 @@ class TestCancelAllActions:
         # Cancel remaining
         count = cancel_all_actions_for_case(db, case.id, reason="manual_stop")
 
-        assert count == 4  # 5 total - 1 already executed
+        assert count == 5  # 6 total - 1 already executed
 
         all_actions = get_actions_by_case(db, case.id)
         assert all_actions[0].status == "executed"
@@ -1102,8 +1114,8 @@ class TestGetScheduleStatus:
 
         status = get_schedule_status(db, case.id)
 
-        assert status["total_actions"] == 5
-        assert len(status["pending"]) == 5
+        assert status["total_actions"] == 6
+        assert len(status["pending"]) == 6
         assert len(status["executed"]) == 0
         assert len(status["cancelled"]) == 0
         db.close()
@@ -1119,8 +1131,8 @@ class TestGetScheduleStatus:
 
         status = get_schedule_status(db, case.id)
 
-        assert status["total_actions"] == 5
-        assert len(status["pending"]) == 4
+        assert status["total_actions"] == 6
+        assert len(status["pending"]) == 5
         assert len(status["executed"]) == 1
         assert status["executed"][0]["action_type"] == "initial_message"
         db.close()
@@ -1169,16 +1181,16 @@ class TestStopKeywords:
 
 
 class TestFullLifecycle:
-    def test_schedule_then_execute_all_5(self):
-        """Schedule, make all due, process — all 5 executed."""
+    def test_schedule_then_execute_all_6(self):
+        """Schedule, make all due, process — all 6 executed."""
         db = TestSessionLocal()
         case, _ = setup_case_and_schedule(db)
         make_all_actions_due(case, db)
 
         results = process_due_actions(db)
 
-        assert results["total_due"] == 5
-        assert results["executed"] == 5
+        assert results["total_due"] == 6
+        assert results["executed"] == 6
 
         all_actions = get_actions_by_case(db, case.id)
         assert all(a.status == "executed" for a in all_actions)
@@ -1192,7 +1204,7 @@ class TestFullLifecycle:
 
         count = cancel_all_actions_for_case(db, case.id, reason="customer_requested_stop")
 
-        assert count == 5
+        assert count == 6
 
         results = process_due_actions(db)
         assert results["total_due"] == 0
@@ -1211,11 +1223,11 @@ class TestFullLifecycle:
 
         # Cancel remaining
         count = cancel_all_actions_for_case(db, case.id, reason="manual_stop")
-        assert count == 3
+        assert count == 4
 
         all_actions = get_actions_by_case(db, case.id)
         assert sum(1 for a in all_actions if a.status == "executed") == 2
-        assert sum(1 for a in all_actions if a.status == "cancelled") == 3
+        assert sum(1 for a in all_actions if a.status == "cancelled") == 4
         db.close()
 
     def test_staggered_execution(self):
@@ -1231,7 +1243,8 @@ class TestFullLifecycle:
             {"delay_hours": 5, "action_type": "reminder_1", "channel": "whatsapp"},
             {"delay_hours": 10, "action_type": "reminder_2", "channel": "whatsapp"},
             {"delay_hours": 20, "action_type": "reminder_3", "channel": "whatsapp"},
-            {"delay_hours": 30, "action_type": "final_reminder", "channel": "whatsapp"},
+            {"delay_hours": 30, "action_type": "reminder_4", "channel": "whatsapp"},
+            {"delay_hours": 40, "action_type": "final_reminder", "channel": "whatsapp"},
         ]
         schedule_recovery_workflow(db, case, schedule_config=future_config)
 
@@ -1253,7 +1266,7 @@ class TestFullLifecycle:
 
         all_actions = get_actions_by_case(db, case.id)
         assert sum(1 for a in all_actions if a.status == "executed") == 2
-        assert sum(1 for a in all_actions if a.status == "pending") == 3
+        assert sum(1 for a in all_actions if a.status == "pending") == 4
         db.close()
 
     def test_stop_mid_sequence(self):
@@ -1276,12 +1289,12 @@ class TestFullLifecycle:
 
         assert result["status"] == "stopped"
 
-        # Remaining 3 should be cancelled
+        # Remaining 4 should be cancelled
         all_actions = get_actions_by_case(db, case.id)
         executed = [a for a in all_actions if a.status == "executed"]
         cancelled = [a for a in all_actions if a.status == "cancelled"]
         assert len(executed) == 2
-        assert len(cancelled) == 3
+        assert len(cancelled) == 4
         db.close()
 
     def test_payment_recovers_mid_sequence(self):
@@ -1321,7 +1334,7 @@ class TestFullLifecycle:
         actions = get_actions_by_case(db, case.id)
         action_types = [a.action_type for a in actions]
 
-        # All 5 action types should be unique
+        # All 6 action types should be unique
         assert len(action_types) == len(set(action_types))
         db.close()
 
@@ -1331,14 +1344,14 @@ class TestFullLifecycle:
         customer = create_test_customer(db)
         revenue_event = create_test_revenue_event(db, customer)
         case = create_test_recovery_case(
-            db, customer, revenue_event, attempt_count=5, max_attempts=5
+            db, customer, revenue_event, attempt_count=6, max_attempts=6
         )
         schedule_recovery_workflow(db, case)
         make_all_actions_due(case, db)
 
         results = process_due_actions(db)
 
-        assert results["cancelled"] == 5
+        assert results["cancelled"] == 6
         assert results["executed"] == 0
 
         db.refresh(case)
@@ -1359,6 +1372,36 @@ class TestFullLifecycle:
 
         results = process_due_actions(db)
 
-        assert results["cancelled"] == 5
+        assert results["cancelled"] == 6
         assert results["executed"] == 0
+        db.close()
+
+    def test_payment_settled_cancels_remaining(self):
+        """If revenue event shows captured status, remaining reminders are cancelled."""
+        db = TestSessionLocal()
+        customer = create_test_customer(db)
+        revenue_event = create_test_revenue_event(db, customer)
+        case = create_test_recovery_case(db, customer, revenue_event)
+        schedule_recovery_workflow(db, case)
+
+        # Execute initial
+        actions = get_actions_by_case(db, case.id)
+        make_action_due(actions[0], db)
+        process_due_actions(db)
+
+        # Simulate payment captured on the revenue event
+        revenue_event.status = "captured"
+        db.commit()
+
+        # Process reminder_1 — should be cancelled (payment settled)
+        make_action_due(actions[1], db)
+        detail = process_single_action(db, actions[1])
+        assert detail["result"] == "cancelled"
+        assert detail["reason"] == "payment_settled"
+
+        # All remaining should be cancelled
+        for a in actions[2:]:
+            make_action_due(a, db)
+            detail = process_single_action(db, a)
+            assert detail["result"] == "cancelled"
         db.close()

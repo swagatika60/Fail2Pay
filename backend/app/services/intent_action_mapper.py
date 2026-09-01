@@ -49,6 +49,44 @@ class IntentAction:
 # No intent can execute arbitrary commands.
 
 INTENT_ACTIONS: dict[CustomerIntent, IntentAction] = {
+    # --- Primary Recovery Specialist intents ---
+    CustomerIntent.PAY_NOW: IntentAction(
+        intent=CustomerIntent.PAY_NOW,
+        action_type="send_payment_link",
+        response_key="pay_now",
+        requires_payment_link=True,
+        record_attempt_result="pay_now_requested",
+    ),
+    CustomerIntent.SPLIT_EMI: IntentAction(
+        intent=CustomerIntent.SPLIT_EMI,
+        action_type="propose_payment_plan",
+        response_key="split_emi",
+        requires_payment_link=True,
+        record_attempt_result="split_emi_requested",
+    ),
+    CustomerIntent.PAY_LATER: IntentAction(
+        intent=CustomerIntent.PAY_LATER,
+        action_type="record_promise",
+        response_key="pay_later",
+        requires_payment_link=True,
+        update_case_status="PROMISED",
+        record_attempt_result="pay_later_requested",
+    ),
+    CustomerIntent.GREETING: IntentAction(
+        intent=CustomerIntent.GREETING,
+        action_type="send_clarification",
+        response_key="greeting",
+        requires_payment_link=True,
+        record_attempt_result="greeting_acknowledged",
+    ),
+    CustomerIntent.FALLBACK: IntentAction(
+        intent=CustomerIntent.FALLBACK,
+        action_type="send_clarification",
+        response_key="fallback",
+        requires_payment_link=True,
+        record_attempt_result="fallback_sent",
+    ),
+    # --- Legacy / granular intents ---
     CustomerIntent.PAYMENT_LINK_REQUEST: IntentAction(
         intent=CustomerIntent.PAYMENT_LINK_REQUEST,
         action_type="send_payment_link",
@@ -104,6 +142,12 @@ INTENT_ACTIONS: dict[CustomerIntent, IntentAction] = {
         update_case_status="STOPPED",
         cancel_scheduled_actions=True,
         record_attempt_result="customer_stopped",
+    ),
+    CustomerIntent.SUPPORT: IntentAction(
+        intent=CustomerIntent.SUPPORT,
+        action_type="escalate_to_human",
+        response_key="support",
+        record_attempt_result="support_handoff",
     ),
     CustomerIntent.UNCLEAR: IntentAction(
         intent=CustomerIntent.UNCLEAR,

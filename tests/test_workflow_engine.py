@@ -427,16 +427,26 @@ class TestMarkPaymentReceived:
         return db, case
 
     def test_full_payment_marks_recovered(self):
+        """A full payment credits the balance but RECOVERED comes only from the
+        verified finalizer (a case may become RECOVERED only via a verified
+        payment.captured event)."""
+        from app.services.workflow_engine import finalize_recovered_case
         db, case = self._setup_case(original_amount=50000)
 
         result = mark_payment_received(db, case.id, amount=50000)
 
+        # Amounts are credited and the balance is reported fully recovered, but
+        # the bare credit is NOT permitted to flip the case to terminal RECOVERED.
         assert result["status"] == "updated"
         assert result["fully_recovered"] is True
         assert result["recovered_amount"] == 50000
         assert result["remaining_amount"] == 0
-        assert result["new_status"] == "RECOVERED"
 
+        db.refresh(case)
+        assert case.status != RecoveryStatus.RECOVERED
+
+        # The verified transition (what a payment.captured webhook runs) finalizes it.
+        finalize_recovered_case(db, case, reason="test")
         db.refresh(case)
         assert case.status == RecoveryStatus.RECOVERED
         assert case.closed_at is not None
@@ -470,14 +480,21 @@ class TestMarkPaymentReceived:
         db.close()
 
     def test_overpayment_marks_recovered(self):
-        """If more than remaining is paid, case is still RECOVERED with 0 remaining."""
+        """Overpayment zeroes the balance, but terminal RECOVERED only comes from
+        the verified finalizer."""
+        from app.services.workflow_engine import finalize_recovered_case
         db, case = self._setup_case(original_amount=50000)
 
         result = mark_payment_received(db, case.id, amount=60000)
 
         assert result["fully_recovered"] is True
         assert result["remaining_amount"] == 0
-        assert result["new_status"] == "RECOVERED"
+        db.refresh(case)
+        assert case.status != RecoveryStatus.RECOVERED
+
+        finalize_recovered_case(db, case, reason="test")
+        db.refresh(case)
+        assert case.status == RecoveryStatus.RECOVERED
         db.close()
 
     def test_mark_payment_creates_audit_event(self):
@@ -684,10 +701,13 @@ class TestFullWorkflowLifecycle:
         result = record_attempt(db, case.id, channel="whatsapp", result="promised")
         assert result["new_status"] == "PROMISED"
 
-        # 3. Customer pays
+        # 3. Customer pays (verified capture) → amounts credited, then finalized
         result = mark_payment_received(db, case.id, amount=50000)
         assert result["fully_recovered"] is True
-        assert result["new_status"] == "RECOVERED"
+        assert result["new_status"] != "RECOVERED"  # only the verified finalizer flips it
+
+        from app.services.workflow_engine import finalize_recovered_case
+        finalize_recovered_case(db, case, reason="payment_captured")
 
         # Verify final state
         db.refresh(case)
@@ -754,8 +774,16 @@ class TestFullWorkflowLifecycle:
         # Continue recovery
         record_attempt(db, case.id, channel="email", result="no_response")
 
-        # Remaining payment
-        mark_payment_received(db, case.id, amount=60000)
+        # Remaining payment (verified capture) → amounts credited, then finalized
+        result = mark_payment_received(db, case.id, amount=60000)
+        assert result["fully_recovered"] is True
+        db.refresh(case)
+        # The credit zeroes the balance but does NOT self-escalate to RECOVERED;
+        # that terminal transition belongs to the verified finalizer.
+        assert case.status != RecoveryStatus.RECOVERED
+
+        from app.services.workflow_engine import finalize_recovered_case
+        finalize_recovered_case(db, case, reason="payment_captured")
         db.refresh(case)
         assert case.status == RecoveryStatus.RECOVERED
         assert case.recovered_amount == 100000

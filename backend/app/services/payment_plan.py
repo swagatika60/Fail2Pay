@@ -170,9 +170,10 @@ def create_payment_plan_for_case(
             "min_amount": policy["min_installment_amount"],
         }
 
-    # Calculate number of installments
+    # Calculate number of installments based on the authoritative remaining amount
     freq_info = FREQUENCIES.get(frequency, FREQUENCIES["weekly"])
-    number_of_installments = -(-case.original_amount // installment_amount)  # ceiling division
+    effective_amount = case.remaining_amount if case.remaining_amount > 0 else case.original_amount
+    number_of_installments = -(-effective_amount // installment_amount)  # ceiling division
 
     if number_of_installments > policy["max_installments"]:
         return {
@@ -191,13 +192,13 @@ def create_payment_plan_for_case(
     # First payment date: next occurrence of frequency
     first_payment_date = datetime.now(timezone.utc) + timedelta(days=freq_info["days"])
 
-    # Create the plan
+    # Create the plan — total_amount is the effective remaining balance
     plan = create_payment_plan(
         db,
         data=PaymentPlanCreate(
             recovery_case_id=case.id,
             customer_id=customer.id,
-            total_amount=case.original_amount,
+            total_amount=effective_amount,
             installment_amount=installment_amount,
             number_of_installments=number_of_installments,
             frequency=frequency,
@@ -367,11 +368,16 @@ def record_installment_payment(
         case.recovered_amount += amount
         case.remaining_amount = max(0, case.original_amount - case.recovered_amount)
 
-        # If plan is complete, mark case as RECOVERED
+        # If plan is complete, mark the case RECOVERED through the deterministic
+        # finalizer (settles the balance, fulfils promises, cancels
+        # outreach/emails, expires links, marks invoices paid and sends the
+        # success email). We do NOT pre-set RECOVERED here — the finalizer owns
+        # the terminal transition (and only sends the confirmation on the
+        # transition into RECOVERED).
         if plan and plan.installments_paid >= plan.number_of_installments:
-            case.status = RecoveryStatus.RECOVERED
-            case.closed_at = datetime.now(timezone.utc)
             logger.info("Payment plan COMPLETED: case=%s, plan=%s", case.id, plan.id)
+            from app.services.workflow_engine import finalize_recovered_case
+            finalize_recovered_case(db, case, reason="installment_plan_completed")
 
         db.commit()
 

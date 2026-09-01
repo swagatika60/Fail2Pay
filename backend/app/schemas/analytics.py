@@ -23,6 +23,11 @@ class RevenueSummary(BaseModel):
     revenue_recovered: int
     revenue_remaining: int
     recovery_rate: float  # recovered / at_risk, 0.0 if no at_risk
+    # Self-cure baseline: cases recovered without any outreach
+    self_cure_count: int = 0
+    self_cure_amount: int = 0
+    self_cure_rate: float = 0.0  # self-cure / total_recovered
+    lift_over_self_cure: float = 0.0  # recovery_rate vs self-cure_rate
 
 
 class FunnelStage(BaseModel):
@@ -57,6 +62,28 @@ class TimelinePoint(BaseModel):
     label: str
     recovered: int
     cumulative: int
+
+
+class PipelineStage(BaseModel):
+    """One stage of the canonical recovery pipeline (unified tracker widget)."""
+
+    stage: str
+    label: str
+    index: int
+    amount: int = 0
+    count: int = 0
+
+
+class RecoveryCost(BaseModel):
+    """Approximate cost of recovery outreach vs verified revenue."""
+
+    whatsapp_messages: int = 0
+    emails: int = 0
+    whatsapp_cost_paise: int = 0
+    email_cost_paise: int = 0
+    total_cost_paise: int = 0
+    recovered_revenue: int = 0
+    cost_of_recovery_ratio: float = 0.0
 
 
 class PaymentPlanRecovery(BaseModel):
@@ -101,6 +128,8 @@ class RevenueMap(BaseModel):
     payment_plan_recovery: PaymentPlanRecovery
     promise_to_pay_recovery: PromiseToPayRecovery
     recovery_timeline: list[TimelinePoint] = []
+    recovery_pipeline: list[PipelineStage] = []
+    recovery_cost: RecoveryCost = RecoveryCost()
 
 
 class RecoveryCaseSummary(BaseModel):
@@ -112,6 +141,7 @@ class RecoveryCaseSummary(BaseModel):
     original_amount: int
     risk_level: str
     status: str
+    recovery_stage: str | None = None
     recovered_amount: int
     remaining_amount: int
     attempt_count: int
@@ -133,6 +163,8 @@ class RecoveryCaseDetail(BaseModel):
     risk_level: str
     risk_reason: str | None
     status: str
+    recovery_stage: str | None = None
+    recovery_stage_index: int | None = None
     original_amount: int
     recovered_amount: int
     remaining_amount: int
@@ -148,6 +180,8 @@ class RecoveryCaseDetail(BaseModel):
     source: str | None = None
     currency: str = "INR"
     failure_reason: str | None = None
+    root_cause: str | None = None
     audit_events: list[dict] | None = None
+    agent_steps: list[dict] | None = None
 
     model_config = {"from_attributes": True}

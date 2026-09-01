@@ -179,6 +179,14 @@ def get_template_for_attempt(attempt_number: int) -> str:
         return "final_notice"
 
 
-def get_payment_link(base_url: str, case_id: str) -> str:
-    """Generate a payment link for a recovery case."""
+def get_payment_link(base_url: str | None = None, case_id: str = "") -> str:
+    """Generate a payment link for a recovery case.
+
+    When *base_url* is not provided (or is a placeholder), the configured
+    payment portal host is resolved from the environment so the generated
+    link is always reachable.
+    """
+    if not base_url or "fail2pay.example.com" in base_url:
+        from app.services.agent_engine import get_pay_host
+        base_url = get_pay_host()
     return f"{base_url}/pay/{case_id}"

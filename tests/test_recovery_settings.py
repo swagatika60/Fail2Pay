@@ -20,7 +20,7 @@ def test_defaults_returned_with_safety_on(db_session):
 
     assert response["max_recovery_attempts"] == 5
     assert response["recovery_window_days"] == 14
-    assert response["default_reminder_sequence"] == [4, 8, 16, 32]
+    assert response["default_reminder_sequence"] == [4, 8, 16, 24, 48]
     assert response["max_installments"] == 4
     assert response["whatsapp_enabled"] is True
     assert response["email_enabled"] is True
@@ -53,7 +53,7 @@ def _valid_payload(**overrides) -> dict:
         "recovery_window_days": 14,
         "whatsapp_enabled": True,
         "email_enabled": True,
-        "default_reminder_sequence": [4, 8, 16, 32],
+        "default_reminder_sequence": [4, 8, 16, 24, 48],
         "payment_plan_enabled": True,
         "max_installments": 4,
         "promise_to_pay_enabled": True,
@@ -107,7 +107,7 @@ def test_sequence_exceeding_window_rejected():
             **{
                 **_valid_payload(),
                 "recovery_window_days": 1,
-                "default_reminder_sequence": [4, 8, 16, 32],  # 60h > 24h
+                "default_reminder_sequence": [4, 8, 16, 24, 48],  # 100h > 24h
             }
         )
 

@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 def initiate_recovery(
     db: Session,
     case_id: uuid.UUID,
-    payment_link_base_url: str = "https://fail2pay.example.com",
+    payment_link_base_url: str | None = None,
 ) -> dict:
     """Initiate the full recovery workflow for a case.
 
@@ -88,12 +88,30 @@ def initiate_recovery(
 
     # --- Step 3: Check if WhatsApp is the recommended action ---
     if policy_result.get("recommended_action") != "SEND_WHATSAPP":
+        # Email fallback: if WhatsApp is blocked but customer has email, send email
+        from app.crud.customer import get_customer as _get_cust
+        _cust = _get_cust(db, case.customer_id)
+        if _cust and _cust.email:
+            from app.services.email import EmailType, send_recovery_email
+            from app.services.agent_engine import payment_url_for_case
+            email_result = send_recovery_email(
+                db=db,
+                case_id=case.id,
+                email_type=EmailType.FAILED_PAYMENT.value,
+                payment_link=payment_url_for_case(str(case.id)),
+            )
+            result["email_fallback"] = email_result.get("status") == "sent"
+            result["email_id"] = email_result.get("email_id")
         result["status"] = "action_not_whatsapp"
         result["recommended_action"] = policy_result.get("recommended_action")
         result["reason"] = policy_result.get("reason", "policy_denied_whatsapp")
         return result
 
     # --- Step 4: Send WhatsApp message ---
+    # Resolve the payment URL from the environment configuration when not provided.
+    if not payment_link_base_url:
+        from app.services.agent_engine import get_pay_host
+        payment_link_base_url = get_pay_host()
     send_result = _send_recovery_message(db, case, payment_link_base_url)
     result["steps"].append({"step": "send_whatsapp", "result": send_result})
 
@@ -142,7 +160,7 @@ def initiate_recovery(
 def process_scheduled_action(
     db: Session,
     action_id: uuid.UUID,
-    payment_link_base_url: str = "https://fail2pay.example.com",
+    payment_link_base_url: str | None = None,
 ) -> dict:
     """Process a scheduled recovery action (e.g., reminder).
 
@@ -304,19 +322,25 @@ def _schedule_next_action(db: Session, case: RecoveryCase) -> dict:
 
     template_stage = get_template_for_attempt(next_attempt)
 
-    # Calculate delay — merchant RecoverySetting sequence with exponential fallback
+    # Calculate delay — merchant RecoverySetting sequence with spaced-out fallback
+    # Cadence: T0+4h, T0+8h, T0+16h, T0+24h, T0+48h (absolute from failure)
     from app.services.recovery_settings import get_or_create
 
-    reminder_sequence = (get_or_create(db).default_reminder_sequence) or [4, 8, 16, 32]
-    template_order = ["initial_payment_failed", "reminder_1", "reminder_2", "final_notice"]
+    reminder_sequence = (get_or_create(db).default_reminder_sequence) or [4, 8, 16, 24, 48]
+    template_order = ["initial_payment_failed", "reminder_1", "reminder_2", "reminder_3", "final_notice"]
     seq_index = template_order.index(template_stage) if template_stage in template_order else 1
     delay_hours = reminder_sequence[min(seq_index, len(reminder_sequence) - 1)] if reminder_sequence else 8
 
-    # Create the scheduled action
+    # Create the scheduled action.
+    # Use case.created_at (T0) as the base so each reminder is anchored to
+    # the original failure time.  Using ``now`` causes cumulative drift:
+    # e.g. T+8h fires and schedules ``now + 16h`` = T+24h instead of T+16h.
     from app.crud.scheduled_action import create_scheduled_action
     from app.schemas.scheduled_action import ScheduledActionCreate
 
-    now = datetime.now(timezone.utc)
+    t0 = case.created_at or datetime.now(timezone.utc)
+    if t0.tzinfo is None:
+        t0 = t0.replace(tzinfo=timezone.utc)
     scheduled_action = create_scheduled_action(
         db,
         data=ScheduledActionCreate(
@@ -324,7 +348,7 @@ def _schedule_next_action(db: Session, case: RecoveryCase) -> dict:
             action_type=template_stage,
             attempt_number=next_attempt,
             channel="whatsapp",
-            scheduled_for=now + timedelta(hours=delay_hours),
+            scheduled_for=t0 + timedelta(hours=delay_hours),
             extra_data={
                 "template_stage": template_stage,
                 "delay_hours": delay_hours,

@@ -16,6 +16,20 @@ const ACTION_ICONS: Record<string, string> = {
   review: "🔄",
 }
 
+export const ACTION_BADGES: Record<string, { label: string; bg: string; text: string }> = {
+  degrade_trigger: { label: "CRIT", bg: "bg-rose-500/10 border-rose-500/30", text: "text-rose-400" },
+  send_upfront_link: { label: "PAY", bg: "bg-emerald-500/10 border-emerald-500/30", text: "text-emerald-400" },
+  send_gateway_link: { label: "LINK", bg: "bg-cyan-500/10 border-cyan-500/30", text: "text-cyan-400" },
+  reminder_24h: { label: "24H", bg: "bg-amber-500/10 border-amber-500/30", text: "text-amber-400" },
+  split_due: { label: "SPLIT", bg: "bg-purple-500/10 border-purple-500/30", text: "text-purple-400" },
+  split_reminder: { label: "NOTIF", bg: "bg-blue-500/10 border-blue-500/30", text: "text-blue-400" },
+  installment_due: { label: "EMI", bg: "bg-indigo-500/10 border-indigo-500/30", text: "text-indigo-400" },
+  reminder: { label: "PING", bg: "bg-sky-500/10 border-sky-500/30", text: "text-sky-400" },
+  review: { label: "SYNC", bg: "bg-violet-500/10 border-violet-500/30", text: "text-violet-400" },
+  escalate_review: { label: "ESCL", bg: "bg-red-500/10 border-red-500/30", text: "text-red-400" },
+};
+
+
 function fmt(dt: string | null): string {
   if (!dt) return "—"
   return new Date(dt).toLocaleString("en-IN", {

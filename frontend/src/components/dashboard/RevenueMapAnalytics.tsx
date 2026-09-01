@@ -1,4 +1,4 @@
-import { memo, useMemo, type CSSProperties } from "react"
+import { memo, useMemo, type CSSProperties, type ReactNode } from "react"
 import {
   Area,
   AreaChart,
@@ -14,131 +14,80 @@ import {
   XAxis,
   YAxis,
 } from "recharts"
-import type { RevenueMap } from "../../types/analytics"
-import { formatINR } from "../../lib/format"
+import {
+  Filter,
+  Radio,
+  TrendingUp,
+  ShieldAlert,
+  Languages,
+  CalendarClock,
+  Handshake,
+  Wallet,
+  AlertTriangle,
+} from "lucide-react"
+import type { RevenueMap, RecoveryCost } from "../../types/analytics"
+import { formatINR, formatINRFull } from "../../lib/format"
 
 interface Props {
   data: RevenueMap
 }
 
 const TOOLTIP_STYLE: CSSProperties = {
-  backgroundColor: "#1e293b",
-  border: "1px solid #334155",
+  backgroundColor: "#111827",
+  border: "1px solid #27272a",
   borderRadius: "8px",
-  color: "#e2e8f0",
-  fontSize: "13px",
+  color: "#e4e4e7",
+  fontSize: "12px",
+  boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
 }
 
 const FUNNEL_COLORS: Record<string, string> = {
-  "Expected Revenue": "#60a5fa",
+  "Expected Revenue": "#71717a",
   "Entered Recovery": "#f59e0b",
-  "Verified Recovered": "#34d399",
-  "Still At Risk": "#f87171",
-  "Lost Revenue": "#64748b",
+  "Verified Recovered": "#10b981",
+  "Still At Risk": "#f43f5e",
+  "Lost Revenue": "#3f3f46",
 }
 
 const CHANNEL_COLORS: Record<string, string> = {
-  whatsapp: "#22d3ee",
+  whatsapp: "#10b981",
   email: "#60a5fa",
   payment_plan: "#a78bfa",
-  unknown: "#64748b",
+  unknown: "#52525b",
 }
 
 const RISK_COLORS: Record<string, string> = {
-  high: "#f87171",
-  medium: "#fbbf24",
-  low: "#34d399",
+  high: "#f43f5e",
+  medium: "#f59e0b",
+  low: "#10b981",
 }
 
-const CHART_TICK = { fill: "#94a3b8", fontSize: 10.5 }
-const CHART_TICK_Y = { fill: "#94a3b8", fontSize: 11 }
+const CHART_TICK = { fill: "#71717a", fontSize: 11 }
+const CHART_TICK_Y = { fill: "#71717a", fontSize: 11 }
+
+const TODAY_ISO = "2026-08-29"
 
 export default memo(function RevenueMapAnalytics({ data }: Props) {
-  const empty = data.cases_count === 0
-  const attemptedUnfulfilled = Math.max(
-    data.attempted_recovery - data.recovered_revenue,
-    0,
+  // Clamp the timeline to today so no future dates render on the axis.
+  const timeline = useMemo(
+    () =>
+      data.recovery_timeline
+        .filter((p) => (p.label || "") <= TODAY_ISO)
+        .slice(-45),
+    [data.recovery_timeline],
   )
 
   return (
-    <div className="space-y-6">
-      {/* Key metrics */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-7">
-        <Stat title="Total Revenue" value={formatINR(data.total_revenue)} color="text-blue-400" subtitle="All failed payments" />
-        <Stat title="At-Risk Revenue" value={formatINR(data.at_risk_revenue)} color="text-red-400" subtitle="Outstanding on open cases" />
-        <Stat title="Verified Recovered" value={formatINR(data.recovered_revenue)} color="text-green-400" subtitle="Captured payments" highlight />
-        <Stat title="Lost Revenue" value={formatINR(data.lost_revenue)} color="text-gray-400" subtitle="Lost / opted out" />
-        <Stat title="Recovery Rate" value={`${(data.recovery_rate * 100).toFixed(1)}%`} color="text-emerald-400" subtitle="Recovered ÷ Total" />
-        <Stat title="Avg Recovery Time" value={`${data.avg_recovery_time_days.toFixed(1)} days`} color="text-cyan-400" subtitle="Creation → payment" />
-        <Stat title="Avg Attempts Before Recovery" value={data.avg_attempts_before_recovery.toFixed(1)} color="text-amber-400" subtitle="Per recovered case" />
-      </div>
-
-      <EmptyNotice hidden={!empty} />
-
-      {/* Attempted vs Verified */}
-      <div className="rounded-xl border border-slate-800 bg-slate-900 p-6">
-        <h2 className="text-lg font-semibold text-slate-100">
-          ⚖️ Attempted Recovery vs Verified Recovered Revenue
-        </h2>
-        <p className="mt-1 text-sm text-slate-400">
-          Attempting to contact a customer is NOT collecting money. Only
-          captured payments count as recovered revenue — never messages,
-          reminders, or promises.
-        </p>
-        <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
-          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-amber-400">
-              Attempted Recovery
-            </p>
-            <p className="mt-1 text-2xl font-bold text-amber-300">{formatINR(data.attempted_recovery)}</p>
-            <p className="mt-1 text-xs text-slate-400">Money recovery engaged with outbound attempts</p>
-          </div>
-          <div className="rounded-lg border border-green-500/30 bg-green-500/10 p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-green-400">
-              Verified Recovered
-            </p>
-            <p className="mt-1 text-2xl font-bold text-green-300">{formatINR(data.recovered_revenue)}</p>
-            <p className="mt-1 text-xs text-slate-400">
-              {data.payments_count} captured payments — actual money collected
-            </p>
-          </div>
-          <div className="rounded-lg border border-slate-700 bg-slate-800/50 p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-              Attempted, not yet collected
-            </p>
-            <p className="mt-1 text-2xl font-bold text-slate-200">
-              {formatINR(attemptedUnfulfilled)}
-            </p>
-            <p className="mt-1 text-xs text-slate-400">Engaged but money has not arrived</p>
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        {/* Revenue Funnel */}
-        <div className="rounded-xl border border-slate-800 bg-slate-900 p-6">
-          <h2 className="text-lg font-semibold text-slate-100">🔻 Revenue Funnel</h2>
-          <p className="mt-1 text-sm text-slate-400">
-            Expected → Recovery → Recovered. Each stage is real money;
-            "Entered Recovery" is the pool recovery engaged, while "Verified
-            Recovered" is only captured payments.
-          </p>
-          <div className="mt-4">
-            <RevenueFunnel stages={data.funnel} />
-          </div>
-          <p className="mt-2 text-xs text-slate-500">
-            "Attempted" is the money pool contacted during recovery; "Verified
-            Recovered" is only captured payments.
-          </p>
-        </div>
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {/* Conversion Funnel */}
+        <Card icon={<Filter className="h-4 w-4 text-zinc-400" />} title="Conversion Funnel">
+          <RevenueFunnel stages={data.funnel} />
+        </Card>
 
         {/* Recovery by Channel */}
-        <div className="rounded-xl border border-slate-800 bg-slate-900 p-6">
-          <h2 className="text-lg font-semibold text-slate-100">📡 Recovery by Channel</h2>
-          <p className="mt-1 text-sm text-slate-400">
-            Verified recovered revenue, grouped by how the money came back.
-          </p>
-          <div className="mt-4 h-72">
+        <Card icon={<Radio className="h-4 w-4 text-zinc-400" />} title="Recovery by Channel">
+          <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie
@@ -148,161 +97,328 @@ export default memo(function RevenueMapAnalytics({ data }: Props) {
                   innerRadius="45%"
                   outerRadius="70%"
                   paddingAngle={2}
-                  stroke="#0f172a"
+                  stroke="#111827"
                 >
                   {data.recovery_by_channel.map((slice) => (
-                    <Cell key={slice.channel} fill={CHANNEL_COLORS[slice.channel] ?? "#64748b"} />
+                    <Cell key={slice.channel} fill={CHANNEL_COLORS[slice.channel] ?? "#52525b"} />
                   ))}
                 </Pie>
                 <Tooltip
-                  formatter={(value) => [formatINR(Number(value)), "Verified recovered"]}
+                  formatter={(value) => [formatINRFull(Number(value)), "Verified recovered"]}
                   contentStyle={TOOLTIP_STYLE}
                 />
-                <Legend formatter={(value) => <span className="text-xs text-slate-300">{value}</span>} />
+                <Legend formatter={(value) => <span className="text-xs text-zinc-400">{value}</span>} />
               </PieChart>
             </ResponsiveContainer>
           </div>
-        </div>
+        </Card>
       </div>
 
-      {/* Recovery Timeline */}
-      <div className="rounded-xl border border-slate-800 bg-slate-900 p-6">
-        <h2 className="text-lg font-semibold text-slate-100">
-          📈 Recovery Timeline <span className="text-sm font-normal text-slate-400">— At Risk → Recovered</span>
-        </h2>
-        <p className="mt-1 text-sm text-slate-400">
-          Cumulative verified recovered revenue over time from when cases went
-          at risk to when money was actually captured.
-        </p>
-        <div className="mt-4 h-72">
+      {/* Recovery Velocity Timeline */}
+      <Card icon={<TrendingUp className="h-4 w-4 text-zinc-400" />} title="Recovery Velocity Timeline">
+        <div className="h-64">
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={data.recovery_timeline} margin={{ top: 10, right: 20, left: 10, bottom: 5 }}>
+            <AreaChart data={timeline} margin={{ top: 10, right: 16, left: 10, bottom: 5 }}>
               <defs>
-                <linearGradient id="gradRecovered" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#22c55e" stopOpacity={0.6} />
-                  <stop offset="95%" stopColor="#22c55e" stopOpacity={0.05} />
+                <linearGradient id="gradSettled" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#10b981" stopOpacity={0.35} />
+                  <stop offset="95%" stopColor="#10b981" stopOpacity={0.02} />
                 </linearGradient>
               </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-              <XAxis dataKey="label" tick={CHART_TICK} axisLine={{ stroke: "#334155" }} tickLine={false} minTickGap={24} />
-              <YAxis tick={CHART_TICK_Y} axisLine={{ stroke: "#334155" }} tickLine={false} tickFormatter={(v: number) => formatINR(v)} width={84} />
-              <Tooltip formatter={(value) => [formatINR(Number(value)), "Verified recovered"]} contentStyle={TOOLTIP_STYLE} />
+              <CartesianGrid strokeDasharray="3 3" stroke="#111827" vertical={false} />
+              <XAxis
+                dataKey="label"
+                tick={CHART_TICK}
+                axisLine={{ stroke: "#1e293b" }}
+                tickLine={false}
+                minTickGap={32}
+                tickFormatter={(v: string) =>
+                  v.slice(5)?.replace("-", "/") ?? v
+                }
+              />
+              <YAxis
+                tick={CHART_TICK_Y}
+                axisLine={{ stroke: "#1e293b" }}
+                tickLine={false}
+                tickFormatter={(v: number) => formatINR(v)}
+                width={68}
+              />
+              <Tooltip
+                content={<SettledTooltip />}
+                cursor={{ stroke: "#334155", strokeDasharray: "3 3" }}
+              />
               <Area
                 type="monotone"
                 dataKey="cumulative"
-                name="Verified recovered"
-                stroke="#22c55e"
+                name="Settled revenue"
+                stroke="#10b981"
                 strokeWidth={2}
-                fill="url(#gradRecovered)"
+                fill="url(#gradSettled)"
                 dot={false}
+                activeDot={{ r: 4, fill: "#10b981", stroke: "#111827" }}
               />
             </AreaChart>
           </ResponsiveContainer>
         </div>
-      </div>
+      </Card>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        {/* Recovery by Risk Level */}
-        <div className="rounded-xl border border-slate-800 bg-slate-900 p-6">
-          <h2 className="text-lg font-semibold text-slate-100">🎯 Recovery by Risk Level</h2>
-          <div className="mt-4 h-64">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        {/* Recovery by Risk Category */}
+        <Card icon={<ShieldAlert className="h-4 w-4 text-zinc-400" />} title="Recovery by Risk Category">
+          <div className="h-60">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={data.recovery_by_risk_level} margin={{ top: 10, right: 10, left: 0, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                <XAxis dataKey="risk_level" tick={CHART_TICK} axisLine={{ stroke: "#334155" }} tickLine={false} />
-                <YAxis tick={CHART_TICK_Y} axisLine={{ stroke: "#334155" }} tickLine={false} tickFormatter={(v: number) => formatINR(v)} width={84} />
-                <Tooltip formatter={(value) => [formatINR(Number(value)), "Verified recovered"]} contentStyle={TOOLTIP_STYLE} />
-                <Bar dataKey="amount" name="Verified recovered" radius={[6, 6, 0, 0]}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#18181b" vertical={false} />
+                <XAxis dataKey="risk_level" tick={CHART_TICK} axisLine={{ stroke: "#27272a" }} tickLine={false} />
+                <YAxis tick={CHART_TICK_Y} axisLine={{ stroke: "#27272a" }} tickLine={false} tickFormatter={(v: number) => formatINR(v)} width={68} />
+                <Tooltip
+                  formatter={(value) => [formatINRFull(Number(value)), "Verified recovered"]}
+                  contentStyle={TOOLTIP_STYLE}
+                  cursor={{ fill: "#18181b" }}
+                />
+                <Bar dataKey="amount" name="Verified recovered" radius={[4, 4, 0, 0]}>
                   {data.recovery_by_risk_level.map((slice) => (
-                    <Cell key={slice.risk_level} fill={RISK_COLORS[slice.risk_level] ?? "#64748b"} />
+                    <Cell key={slice.risk_level} fill={RISK_COLORS[slice.risk_level] ?? "#52525b"} />
                   ))}
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
           </div>
-        </div>
+        </Card>
 
-        {/* Recovery by Language */}
-        <div className="rounded-xl border border-slate-800 bg-slate-900 p-6">
-          <h2 className="text-lg font-semibold text-slate-100">🗣️ Recovery by Language</h2>
-          <div className="mt-4 h-64">
+        {/* Outreach Language Distribution */}
+        <Card icon={<Languages className="h-4 w-4 text-zinc-400" />} title="Outreach by Language">
+          <div className="h-60">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart
                 layout="vertical"
                 data={data.recovery_by_language}
-                margin={{ top: 10, right: 20, left: 16, bottom: 5 }}
+                margin={{ top: 4, right: 16, left: 8, bottom: 4 }}
               >
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" horizontal={false} />
-                <XAxis type="number" tick={CHART_TICK} axisLine={{ stroke: "#334155" }} tickLine={false} tickFormatter={(v: number) => formatINR(v)} />
-                <YAxis type="category" dataKey="name" tick={CHART_TICK} axisLine={{ stroke: "#334155" }} tickLine={false} width={84} />
-                <Tooltip formatter={(value) => [formatINR(Number(value)), "Verified recovered"]} contentStyle={TOOLTIP_STYLE} />
-                <Bar dataKey="amount" name="Verified recovered" radius={[0, 6, 6, 0]}>
-                  {data.recovery_by_language.map((slice) => (
-                    <Cell key={slice.language} fill="#5b8def" />
-                  ))}
-                </Bar>
+                <CartesianGrid strokeDasharray="3 3" stroke="#18181b" horizontal={false} />
+                <XAxis type="number" tick={CHART_TICK} axisLine={{ stroke: "#27272a" }} tickLine={false} tickFormatter={(v: number) => formatINR(v)} />
+                <YAxis type="category" dataKey="name" tick={CHART_TICK} axisLine={{ stroke: "#27272a" }} tickLine={false} width={82} />
+                <Tooltip
+                  formatter={(value) => [formatINRFull(Number(value)), "Verified recovered"]}
+                  contentStyle={TOOLTIP_STYLE}
+                  cursor={{ fill: "#18181b" }}
+                />
+                <Bar dataKey="amount" name="Verified recovered" radius={[0, 4, 4, 0]} fill="#60a5fa" />
               </BarChart>
             </ResponsiveContainer>
           </div>
-        </div>
+        </Card>
+
+        {/* Recovery by Failure Reason */}
+        <Card icon={<AlertTriangle className="h-4 w-4 text-zinc-400" />} title="Recovery by Root Cause">
+          <div className="h-60">
+            {data.recovery_by_failure_reason && data.recovery_by_failure_reason.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  layout="vertical"
+                  data={data.recovery_by_failure_reason}
+                  margin={{ top: 4, right: 16, left: 8, bottom: 4 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#18181b" horizontal={false} />
+                  <XAxis type="number" tick={CHART_TICK} axisLine={{ stroke: "#27272a" }} tickLine={false} tickFormatter={(v: number) => formatINR(v)} />
+                  <YAxis type="category" dataKey="name" tick={CHART_TICK} axisLine={{ stroke: "#27272a" }} tickLine={false} width={100} />
+                  <Tooltip
+                    formatter={(value) => [formatINRFull(Number(value)), "Verified recovered"]}
+                    contentStyle={TOOLTIP_STYLE}
+                    cursor={{ fill: "#18181b" }}
+                  />
+                  <Bar dataKey="amount" name="Verified recovered" radius={[0, 4, 4, 0]} fill="#f59e0b" />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <p className="flex h-full items-center justify-center text-sm text-zinc-500">No failure reason data yet.</p>
+            )}
+          </div>
+        </Card>
       </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        {/* Payment Plan Recovery */}
-        <div className="rounded-xl border border-slate-800 bg-slate-900 p-6">
-          <h2 className="text-lg font-semibold text-slate-100">📅 Payment Plan Recovery</h2>
-          <p className="mt-1 text-sm text-slate-400">
-            Money agreed to be paid back in installments — and how much has
-            actually been collected so far.
-          </p>
-          {data.payment_plan_recovery.plans_count > 0 ? (
-            <>
-              <div className="mt-4 grid grid-cols-2 gap-3">
-                <PanelStat label="Active Plans" value={String(data.payment_plan_recovery.plans_count)} color="text-fuchsia-400" />
-                <PanelStat label="Planned Revenue" value={formatINR(data.payment_plan_recovery.total_amount)} color="text-blue-400" />
-                <PanelStat label="Verified Collected" value={formatINR(data.payment_plan_recovery.recovered_amount)} color="text-green-400" />
-                <PanelStat label="Still Scheduled" value={formatINR(data.payment_plan_recovery.remaining_amount)} color="text-amber-400" />
-              </div>
-              <ProgressBar
-                value={data.payment_plan_recovery.recovered_amount}
-                total={data.payment_plan_recovery.total_amount}
-                label={`${(data.payment_plan_recovery.recovery_rate * 100).toFixed(1)}% of planned money collected`}
-              />
-            </>
-          ) : (
-            <p className="mt-4 text-sm text-slate-500">No payment plans yet.</p>
-          )}
-        </div>
+      {/* Bottom analytics grid */}
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <Card icon={<CalendarClock className="h-4 w-4 text-zinc-400" />} title="Structured Payment Plans">
+          <PlanProgress
+            collected={data.payment_plan_recovery.recovered_amount}
+            scheduled={data.payment_plan_recovery.total_amount}
+            rate={data.payment_plan_recovery.recovery_rate}
+            plans={data.payment_plan_recovery.plans_count}
+            emptyText="No payment plans yet."
+          />
+        </Card>
 
-        {/* Promise-to-Pay Recovery */}
-        <div className="rounded-xl border border-slate-800 bg-slate-900 p-6">
-          <h2 className="text-lg font-semibold text-slate-100">🤝 Promise-to-Pay Recovery</h2>
-          <p className="mt-1 text-sm text-slate-400">
-            Customers who said they would pay. A promise is not a payment — this
-            shows how many promised ₹ ever became captured payments.
-          </p>
-          {data.promise_to_pay_recovery.promised_cases > 0 ? (
-            <>
-              <div className="mt-4 grid grid-cols-2 gap-3">
-                <PanelStat label="Promised Cases" value={String(data.promise_to_pay_recovery.promised_cases)} color="text-blue-400" />
-                <PanelStat label="Promised Amount" value={formatINR(data.promise_to_pay_recovery.promised_amount)} color="text-purple-400" />
-                <PanelStat label="Verified Collected" value={formatINR(data.promise_to_pay_recovery.recovered_amount)} color="text-green-400" />
-                <PanelStat label="Still Outstanding" value={formatINR(data.promise_to_pay_recovery.outstanding_amount)} color="text-red-400" />
-              </div>
-              <ProgressBar
-                value={data.promise_to_pay_recovery.recovered_amount}
-                total={data.promise_to_pay_recovery.promised_amount}
-                label={`${(data.promise_to_pay_recovery.recovery_rate * 100).toFixed(1)}% of promised money became real payments`}
-              />
-            </>
-          ) : (
-            <p className="mt-4 text-sm text-slate-500">No promised payments yet.</p>
-          )}
-        </div>
+        <Card icon={<Handshake className="h-4 w-4 text-zinc-400" />} title="Promise-to-Pay Realization">
+          <PlanProgress
+            collected={data.promise_to_pay_recovery.recovered_amount}
+            scheduled={data.promise_to_pay_recovery.promised_amount}
+            rate={data.promise_to_pay_recovery.recovery_rate}
+            plans={data.promise_to_pay_recovery.promised_cases}
+            emptyText="No promised payments yet."
+          />
+        </Card>
       </div>
+
+      {/* Cost of Recovery */}
+      <Card icon={<Wallet className="h-4 w-4 text-zinc-400" />} title="Cost of Recovery">
+        <CostOfRecovery cost={data.recovery_cost} />
+      </Card>
     </div>
   )
 })
+
+/* ---------- Building blocks ---------- */
+
+function SectionHeading({
+  icon,
+  title,
+}: {
+  icon: ReactNode
+  title: string
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      {icon}
+      <h2 className="text-sm font-semibold tracking-tight text-zinc-100">{title}</h2>
+    </div>
+  )
+}
+
+function Card({
+  icon,
+  title,
+  children,
+}: {
+  icon: ReactNode
+  title: string
+  children: ReactNode
+}) {
+  return (
+    <section className="rounded-xl border border-zinc-800/80 bg-zinc-900/60 p-5 transition-colors duration-150 hover:border-zinc-700">
+      <SectionHeading icon={icon} title={title} />
+      <div className="mt-4">{children}</div>
+    </section>
+  )
+}
+
+function PlanProgress({
+  collected,
+  scheduled,
+  rate,
+  plans,
+  emptyText,
+}: {
+  collected: number
+  scheduled: number
+  rate: number
+  plans: number
+  emptyText: string
+}) {
+  if (scheduled <= 0 || plans <= 0) {
+    return <p className="text-sm text-zinc-500">{emptyText}</p>
+  }
+  const pct = Math.min(rate * 100, 100)
+  return (
+    <div>
+      <div className="flex items-baseline justify-between">
+        <p className="text-xs text-zinc-400">
+          <span className="font-semibold text-emerald-400">{formatINRFull(collected)}</span>{" "}
+          collected of{" "}
+          <span className="font-medium text-zinc-200">{formatINRFull(scheduled)}</span>{" "}
+          {plans === 1 ? "plan" : "plans"}
+        </p>
+        <span className="font-mono text-xs font-semibold tabular-nums text-emerald-400">
+          {pct.toFixed(1)}%
+        </span>
+      </div>
+      <div className="mt-2 h-2 overflow-hidden rounded-full bg-zinc-800">
+        <div
+          className="h-full rounded-full bg-emerald-500"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <p className="mt-1.5 font-mono text-[11px] tabular-nums text-zinc-500">
+        across {plans} {plans === 1 ? "case" : "cases"}
+      </p>
+    </div>
+  )
+}
+
+function CostOfRecovery({ cost }: { cost: RecoveryCost }) {
+  const spent = cost.total_cost_paise
+  const recovered = cost.recovered_revenue
+  const ratio = cost.cost_of_recovery_ratio ?? (spent > 0 && recovered > 0 ? spent / recovered : 0)
+  const pct = Math.min(ratio * 100, 100)
+  const warn = pct > 5
+
+  if (spent <= 0 && cost.whatsapp_messages <= 0 && cost.emails <= 0) {
+    return <p className="text-sm text-zinc-500">No outreach costs tracked yet.</p>
+  }
+
+  return (
+    <div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="rounded-lg border border-zinc-800/80 bg-zinc-950/40 p-3">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-400">Outreach mix</p>
+          <p className="mt-1 text-sm font-semibold text-zinc-200">
+            {cost.whatsapp_messages} WhatsApp
+          </p>
+          <p className="text-sm font-semibold text-zinc-200">{cost.emails} email</p>
+          <p className="mt-1 font-mono text-[10px] tabular-nums text-zinc-500">
+            ₹{cost.whatsapp_cost_paise / 100} + ₹{cost.email_cost_paise / 100} in cost
+          </p>
+        </div>
+        <div className="rounded-lg border border-zinc-800/80 bg-zinc-950/40 p-3">
+          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-zinc-400">Spend vs recovered</p>
+          <p className="mt-1 font-mono text-lg font-semibold tabular-nums text-amber-400">{formatINR(spent)}</p>
+          <p className="font-mono text-xs tabular-nums text-emerald-400">{formatINR(recovered)} recovered</p>
+        </div>
+      </div>
+      <div className="mt-3">
+        <div className="flex items-baseline justify-between">
+          <p className="text-[10px] uppercase tracking-[0.12em] text-zinc-500">Cost of recovery</p>
+          <span className={`font-mono text-xs font-semibold tabular-nums ${warn ? "text-amber-400" : "text-emerald-400"}`}>
+            {pct.toFixed(2)}%
+          </span>
+        </div>
+        <div className="mt-1 h-2 overflow-hidden rounded-full bg-zinc-800">
+          <div
+            className={`h-full rounded-full ${warn ? "bg-amber-500" : "bg-emerald-500"}`}
+            style={{ width: `${Math.min(pct, 100)}%` }}
+          />
+        </div>
+        <p className="mt-1.5 text-[10px] text-zinc-600">
+          {ratio >= 1
+            ? "Spend exceeds recovered value — outreach density too high."
+            : "Outreach cost is a small fraction of verified recovered revenue."}
+        </p>
+      </div>
+    </div>
+  )
+}
+
+function SettledTooltip({
+  active,
+  payload,
+  label,
+}: {
+  active?: boolean
+  payload?: Array<{ value: number }>
+  label?: string | number
+}) {
+  if (!active || !payload || payload.length === 0) return null
+  return (
+    <div style={TOOLTIP_STYLE} className="px-3 py-2">
+      <p className="text-[10px] uppercase tracking-wider text-zinc-500">
+        {String(label)}
+      </p>
+      <p className="mt-0.5 font-mono text-sm font-semibold tabular-nums text-emerald-400">
+        {formatINRFull(Number(payload[0].value))}
+      </p>
+    </div>
+  )
+}
 
 const BAND_HEIGHT = 46
 const BAND_GAP = 10
@@ -310,16 +426,6 @@ const PAD_TOP = 6
 const PAD_BOTTOM = 8
 const VIEW_W = 360
 
-/**
- * A dependency-light SVG revenue funnel.
- *
- * Each stage renders as a centered trapezoid whose width is proportional to its
- * amount relative to the largest stage. The stage name and its formatted amount
- * are drawn mid-band with `textAnchor="middle"` so they always sit centered
- * inside the polygon. A `viewBox` + `preserveAspectRatio=meet` keeps the whole
- * figure responsive (scales to the card width) without clipping, and the height
- * is derived from the stage count so tall funnels grow vertically.
- */
 function RevenueFunnel({ stages }: { stages: { name: string; amount: number }[] }) {
   const hasData = !!stages && stages.length > 0
 
@@ -330,9 +436,7 @@ function RevenueFunnel({ stages }: { stages: { name: string; amount: number }[] 
     const usable = VIEW_W - sidePad * 2
     let y = PAD_TOP
 
-    const widths = stages.map((s) =>
-      (s.amount / maxAmount) * usable,
-    )
+    const widths = stages.map((s) => (s.amount / maxAmount) * usable)
 
     return stages.map((stage, i) => {
       const topW = Math.max(widths[i], 10)
@@ -358,7 +462,7 @@ function RevenueFunnel({ stages }: { stages: { name: string; amount: number }[] 
 
   if (!hasData) {
     return (
-      <div className="flex h-40 items-center justify-center rounded-lg bg-slate-800/40 text-sm text-slate-500">
+      <div className="flex h-40 items-center justify-center rounded-lg border border-zinc-800/80 bg-zinc-950/40 text-sm text-zinc-500">
         No funnel data yet
       </div>
     )
@@ -376,111 +480,15 @@ function RevenueFunnel({ stages }: { stages: { name: string; amount: number }[] 
     >
       {bands.map((b) => (
         <g key={b.stage.name}>
-          <polygon
-            points={b.pts}
-            fill={b.fill}
-            fillOpacity={0.32}
-            stroke={b.fill}
-            strokeWidth={1.5}
-          />
-          <text
-            x={VIEW_W / 2}
-            y={b.cy - 1}
-            textAnchor="middle"
-            fill="#e2e8f0"
-            fontSize={12}
-            fontWeight={600}
-          >
+          <polygon points={b.pts} fill={b.fill} fillOpacity={0.32} stroke={b.fill} strokeWidth={1.5} />
+          <text x={VIEW_W / 2} y={b.cy - 1} textAnchor="middle" fill="#e4e4e7" fontSize={12} fontWeight={600}>
             {b.stage.name}
           </text>
-          <text
-            x={VIEW_W / 2}
-            y={b.cy + 13}
-            textAnchor="middle"
-            fill={b.fill}
-            fontSize={12}
-            fontWeight={700}
-          >
+          <text x={VIEW_W / 2} y={b.cy + 13} textAnchor="middle" fill={b.fill} fontSize={12} fontWeight={700}>
             {formatINR(b.stage.amount)}
           </text>
         </g>
       ))}
     </svg>
-  )
-}
-
-function Stat({
-  title,
-  value,
-  color,
-  subtitle,
-  highlight,
-}: {
-  title: string
-  value: string
-  color: string
-  subtitle?: string
-  highlight?: boolean
-}) {
-  return (
-    <div
-      className={`rounded-xl border p-4 ${
-        highlight
-          ? "border-green-500/40 bg-gradient-to-br from-green-950/40 to-emerald-900/20"
-          : "border-slate-800 bg-slate-900"
-      }`}
-    >
-      <p className="text-xs text-slate-400">{title}</p>
-      <p className={`mt-1 text-xl font-bold ${color}`}>{value}</p>
-      {subtitle && <p className="mt-0.5 text-[10px] text-slate-500">{subtitle}</p>}
-    </div>
-  )
-}
-
-function PanelStat({
-  label,
-  value,
-  color,
-}: {
-  label: string
-  value: string
-  color: string
-}) {
-  return (
-    <div className="rounded-lg bg-slate-800/50 p-3 text-center">
-      <p className={`text-lg font-bold ${color}`}>{value}</p>
-      <p className="text-[11px] text-slate-500">{label}</p>
-    </div>
-  )
-}
-
-function ProgressBar({
-  value,
-  total,
-  label,
-}: {
-  value: number
-  total: number
-  label: string
-}) {
-  const pct = total > 0 ? Math.min((value / total) * 100, 100) : 0
-  return (
-    <div className="mt-4">
-      <div className="mb-1 text-xs text-slate-400">{label}</div>
-      <div className="h-2.5 overflow-hidden rounded-full bg-slate-800">
-        <div className="h-full rounded-full bg-green-500" style={{ width: `${pct}%` }} />
-      </div>
-    </div>
-  )
-}
-
-function EmptyNotice({ hidden }: { hidden: boolean }) {
-  if (hidden) return null
-  return (
-    <div className="rounded-xl border border-slate-800 bg-slate-900 p-4 text-sm text-slate-400">
-      No recovery cases yet — run the{" "}
-      <span className="font-medium text-blue-400">Batch Simulation</span> or wait
-      for real failed payments to build the Revenue Map.
-    </div>
   )
 }

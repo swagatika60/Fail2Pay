@@ -45,6 +45,7 @@ class LanguagePatterns:
     invoice: list[str] = field(default_factory=list)
     payment_plan: list[str] = field(default_factory=list)
     question: list[str] = field(default_factory=list)
+    support: list[str] = field(default_factory=list)
 
 
 # --- Language-Specific Patterns ---
@@ -67,6 +68,9 @@ PATTERNS: dict[str, LanguagePatterns] = {
         promise_to_pay=[
             r"\bi'?ll\s*pay\b", r"\bwill\s*pay\b", r"\bpromise\b",
             r"\bpay\s*(tomorrow|soon|by\s*\w+|within)\b",
+            r"\bpay\s*later\b",
+            r"\bpay\s*in\s*\d+\s*days?\b",
+            r"\b(need|want|give)\s*\d+\s*days?\b",
             r"\bsure\s*i\s*will\b", r"\bdefinitely\b", r"\bpaying\b",
         ],
         payment_retry=[
@@ -84,10 +88,19 @@ PATTERNS: dict[str, LanguagePatterns] = {
             r"\b(installment|payment\s*plan|emi)\b", r"\bpay\s*in\s*\d+\s*(parts|installments)\b",
             r"\bsplit\b.*\bpayment\b", r"\bmonthly\b.*\bpay\b",
             r"\bpay\s*in\s*installments\b", r"\bin\s*installments\b",
+            r"\bpay(?:ing)?\s*(?:a\s*)?part\s*\d+\b",
+            r"\bpart\s*\d+\b.*\bin\s*\d+\s*installments?\b",
+            r"\bnow\s*in\s*\d+\s*installments?\b",
         ],
         question=[
             r"\?$", r"\bwhy\b", r"\bwhat\b", r"\bhow\b", r"\bwhen\b",
             r"\bwhere\b", r"\bwho\b", r"\bcan\s*you\b", r"\bcould\s*you\b",
+        ],
+        support=[
+            r"\btalk\s*to\s*(support|human|agent|someone)\b",
+            r"\bhuman\s*(agent|support|representative)\b",
+            r"\bcustomer\s*service\b", r"\bspeak\s*to\s*(someone|a\s*person)\b",
+            r"\bhelp\s*from\s*(a\s*)?(human|person|agent)\b",
         ],
     ),
     "hi": LanguagePatterns(
@@ -165,6 +178,8 @@ PATTERNS: dict[str, LanguagePatterns] = {
             r"\bkal\b.*\b(karo*unga|de\s*dunga|pay\s*karo*unga|kar\s*dunga)\b", r"\bkal\s*de\s*dunga\b",
             r"\bmain\b.*\bkaro*unga\b", r"\bpakka\b", r"\bdefinitely\b",
             r"\bjarur\b", r"\bho\s*giya\b",
+            r"\bpay\s*later\b", r"\blater\s*mein\b",
+            r"\bpay\s*in\s*\d+\s*days?\b", r"\b(need|want)\s*\d+\s*days?\b",
         ],
         payment_retry=[
             r"\bphir\s*se\b", r"\bdobara\b", r"\bretry\b",
@@ -295,6 +310,33 @@ RESPONSE_TEMPLATES: dict[str, dict[str, str]] = {
             "You can retry your payment of {amount} using this link:\n{payment_link}\n\n"
             "If the payment fails again, please let us know and we'll help you troubleshoot."
         ),
+        # Recovery Specialist intents
+        "pay_now": (
+            "Here is your direct link to settle the balance of {amount}:\n{payment_link}\n\n"
+            "Tap it anytime to complete your payment."
+        ),
+        "split_emi": (
+            "We can split your payment of {amount} into manageable installments.\n\n"
+            "Use this link to activate your plan:\n{payment_link}"
+        ),
+        "pay_later": (
+            "No problem! We've paused reminders for you.\n\n"
+            "Your payment link for {amount} stays active:\n{payment_link}\n\n"
+            "When would you like to pay? Just reply with a date."
+        ),
+        "greeting": (
+            "Hello! I'm here to help with your pending payment of {amount}.\n\n"
+            "Would you like to complete the payment or split it into installments?"
+        ),
+        "fallback": (
+            "I'm sorry, I didn't quite catch that.\n\n"
+            "Would you like to pay the full balance, split it into installments, "
+            "or talk to support? Your pending payment is {amount}: {payment_link}"
+        ),
+        "support": (
+            "I'm connecting you with our human support team right now.\n\n"
+            "Someone will join this chat within 2-3 minutes or reply here directly."
+        ),
     },
     "hi": {
         "payment_link": (
@@ -350,6 +392,33 @@ RESPONSE_TEMPLATES: dict[str, dict[str, str]] = {
         "payment_retry": (
             "Aap {amount} ka payment phir se kar sakte hain:\n{payment_link}\n\n"
             "Payment fir fail hota hai toh humein batayein — hum help karenge."
+        ),
+        # Recovery Specialist intents
+        "pay_now": (
+            "Yeh raha aapka direct payment link {amount} ke liye:\n{payment_link}\n\n"
+            "Kabhi bhi click karke pay karein."
+        ),
+        "split_emi": (
+            "Hum aapke {amount} ko kiston mein split kar sakte hain.\n\n"
+            "Apna plan activate karne ke liye yahan click karein:\n{payment_link}"
+        ),
+        "pay_later": (
+            "Koi baat nahi! Humne reminders pause kar diye hain.\n\n"
+            "Aapka payment link {amount} ke liye active rahega:\n{payment_link}\n\n"
+            "Kis din pay karna chahenge? Reply mein date bata dein."
+        ),
+        "greeting": (
+            "Namaste! Aapki pending payment {amount} ke liye hai.\n\n"
+            "Kya aap aaj poora bhugtan karna chahenge ya kishton mein baantein?"
+        ),
+        "fallback": (
+            "Maaf kijiye, main theek se samajh nahi paya.\n\n"
+            "Kya aap poora bhugtan karna chahenge, kishton mein, ya support se baat karein? "
+            "Aapka pending payment {amount} hai: {payment_link}"
+        ),
+        "support": (
+            "Main abhi hamari human support team ko connect kar raha hoon.\n\n"
+            "Koi 2-3 minute mein issi chat mein aayega ya yahin reply karega."
         ),
     },
     "hi-en": {
@@ -407,6 +476,33 @@ RESPONSE_TEMPLATES: dict[str, dict[str, str]] = {
             "Aap {amount} ka payment phir se kar sakte hain:\n{payment_link}\n\n"
             "Payment fir fail hota hai toh humein batayein — hum help karenge."
         ),
+        # Recovery Specialist intents
+        "pay_now": (
+            "Yeh raha aapka direct payment link {amount} ke liye:\n{payment_link}\n\n"
+            "Kabhi bhi click karke pay karein."
+        ),
+        "split_emi": (
+            "Hum aapke {amount} ko kiston mein split kar sakte hain.\n\n"
+            "Apna plan activate karne ke liye yahan click karein:\n{payment_link}"
+        ),
+        "pay_later": (
+            "Koi baat nahi! Humne reminders pause kar diye hain.\n\n"
+            "Aapka payment link {amount} ke liye active rahega:\n{payment_link}\n\n"
+            "Kis din pay karna chahenge? Reply mein date bata dein."
+        ),
+        "greeting": (
+            "Namaste! Aapki pending payment {amount} ke liye hai.\n\n"
+            "Kya aap aaj poora bhugtan karna chahenge ya kishton mein baantein?"
+        ),
+        "fallback": (
+            "Maaf kijiye, main theek se samajh nahi paya.\n\n"
+            "Kya aap poora bhugtan karna chahenge, kishton mein, ya support se baat karein? "
+            "Aapka pending payment {amount} hai: {payment_link}"
+        ),
+        "support": (
+            "Main abhi hamari human support team ko connect kar raha hoon.\n\n"
+            "Koi 2-3 minute mein issi chat mein aayega ya yahin reply karega."
+        ),
     },
     "or": {
         "payment_link": (
@@ -462,6 +558,33 @@ RESPONSE_TEMPLATES: dict[str, dict[str, str]] = {
         "payment_retry": (
             "Apana {amount} payment puni karipariba:\n{payment_link}\n\n"
             "Payment puni fail hele apana amaku kahantu — aame sahajya karibu."
+        ),
+        # Recovery Specialist intents
+        "pay_now": (
+            "Apana direct payment link {amount} pain:\n{payment_link}\n\n"
+            "Kebe bi click karipariba."
+        ),
+        "split_emi": (
+            "Apana {amount} ku kichhi kista re split karipariba.\n\n"
+            "Plan activate karibaku eithire click karantu:\n{payment_link}"
+        ),
+        "pay_later": (
+            "Kichhi nahi! Aame reminders pause karideichu.\n\n"
+            "Apana payment link {amount} pain active rahiba:\n{payment_link}\n\n"
+            "Kete dinare pay karibaku chahunchanti? Reply re date kahantu."
+        ),
+        "greeting": (
+            "Namaste! Apana pending payment {amount} pain aachi.\n\n"
+            "Apana aji pura pay karibaku chahunchanti ki kista re?"
+        ),
+        "fallback": (
+            "Maaf karantu, aame bujhiparilu nahin.\n\n"
+            "Apana pura pay karibaku chahunchanti, kista re, ki support sathire kathaa karantu? "
+            "Apana pending payment {amount}: {payment_link}"
+        ),
+        "support": (
+            "Aame apana mananku human support team sathire connect karuchu.\n\n"
+            "Kichhi minute bhitare ehi chat re asiba."
         ),
     },
 }

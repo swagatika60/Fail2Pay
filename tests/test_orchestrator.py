@@ -722,7 +722,7 @@ class TestFullLifecycle:
         message = call_args.kwargs.get("message") or call_args[1].get("message")
         assert "Rahul" in message
         assert "₹1,499" in message
-        assert "https://" in message  # Payment link
+        assert "http" in message  # Payment link uses configured portal URL
         # Should NOT contain threatening words
         import re
         threatening = ["urgent", "legal", "court", "police", "arrest", "sue"]

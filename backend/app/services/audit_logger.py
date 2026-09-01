@@ -57,6 +57,16 @@ class AuditEventType:
     RECOVERY_EXPIRED = "RECOVERY_EXPIRED"
     AI_ERROR = "AI_ERROR"
     EXTERNAL_API_ERROR = "EXTERNAL_API_ERROR"
+    # Plan modification analytics events
+    PLAN_MODIFIED = "PLAN_MODIFIED"
+    SUB_SPLIT_CREATED = "SUB_SPLIT_CREATED"
+    NEGOTIATION_PATTERN = "NEGOTIATION_PATTERN"
+    # B2B Receivables Chaser events
+    RECEIVABLE_OVERDUE = "RECEIVABLE_OVERDUE"
+    RECEIVABLE_ESCALATED = "RECEIVABLE_ESCALATED"
+    RECEIVABLE_PAYMENT_RECEIVED = "RECEIVABLE_PAYMENT_RECEIVED"
+    RECEIVABLE_WRITTEN_OFF = "RECEIVABLE_WRITTEN_OFF"
+    RECEIVABLE_DISPUTED = "RECEIVABLE_DISPUTED"
 
 
 # Event type → human-readable description
@@ -84,6 +94,14 @@ EVENT_DESCRIPTIONS = {
     AuditEventType.RECOVERY_EXPIRED: "Recovery deadline expired",
     AuditEventType.AI_ERROR: "AI service error",
     AuditEventType.EXTERNAL_API_ERROR: "External API error",
+    AuditEventType.PLAN_MODIFIED: "Payment plan modified by customer",
+    AuditEventType.SUB_SPLIT_CREATED: "Installment sub-split created",
+    AuditEventType.NEGOTIATION_PATTERN: "Negotiation pattern detected",
+    AuditEventType.RECEIVABLE_OVERDUE: "B2B receivable invoice became overdue",
+    AuditEventType.RECEIVABLE_ESCALATED: "B2B receivable invoice escalated",
+    AuditEventType.RECEIVABLE_PAYMENT_RECEIVED: "Payment received on B2B receivable",
+    AuditEventType.RECEIVABLE_WRITTEN_OFF: "B2B receivable written off",
+    AuditEventType.RECEIVABLE_DISPUTED: "B2B receivable invoice disputed",
 }
 
 
@@ -112,6 +130,14 @@ EVENT_ICONS = {
     AuditEventType.RECOVERY_EXPIRED: "⏰",
     AuditEventType.AI_ERROR: "🤖",
     AuditEventType.EXTERNAL_API_ERROR: "🔌",
+    AuditEventType.PLAN_MODIFIED: "🔄",
+    AuditEventType.SUB_SPLIT_CREATED: "✂️",
+    AuditEventType.NEGOTIATION_PATTERN: "📊",
+    AuditEventType.RECEIVABLE_OVERDUE: "⏰",
+    AuditEventType.RECEIVABLE_ESCALATED: "📈",
+    AuditEventType.RECEIVABLE_PAYMENT_RECEIVED: "💰",
+    AuditEventType.RECEIVABLE_WRITTEN_OFF: "📝",
+    AuditEventType.RECEIVABLE_DISPUTED: "⚠️",
 }
 
 
@@ -140,6 +166,14 @@ EVENT_COLORS = {
     AuditEventType.RECOVERY_EXPIRED: "gray",
     AuditEventType.AI_ERROR: "red",
     AuditEventType.EXTERNAL_API_ERROR: "red",
+    AuditEventType.PLAN_MODIFIED: "amber",
+    AuditEventType.SUB_SPLIT_CREATED: "orange",
+    AuditEventType.NEGOTIATION_PATTERN: "purple",
+    AuditEventType.RECEIVABLE_OVERDUE: "red",
+    AuditEventType.RECEIVABLE_ESCALATED: "amber",
+    AuditEventType.RECEIVABLE_PAYMENT_RECEIVED: "green",
+    AuditEventType.RECEIVABLE_WRITTEN_OFF: "gray",
+    AuditEventType.RECEIVABLE_DISPUTED: "orange",
 }
 
 
@@ -510,6 +544,227 @@ def log_external_api_error(db, case_id, api_name, error, operation=""):
             "api_name": api_name,
             "operation": operation,
             "error": str(error)[:500],
+        },
+    )
+
+
+# ============================================================
+# PLAN MODIFICATION ANALYTICS
+# ============================================================
+
+
+def log_plan_modified(
+    db,
+    case_id,
+    old_count: int,
+    new_count: int,
+    total_amount: int,
+    modification_type: str = "change_count",
+    customer_message: str = "",
+    sentiment: str = "Neutral",
+) -> dict:
+    """Log a plan modification event for analytics.
+
+    Tracks when a customer changes their installment count, providing
+    data for negotiation pattern analysis.
+
+    Args:
+        db: Database session
+        case_id: Recovery case UUID
+        old_count: Previous installment count
+        new_count: New requested installment count
+        total_amount: Total amount in paise
+        modification_type: "change_count", "sub_split", "custom_date"
+        customer_message: Customer's original message (truncated)
+        sentiment: Customer sentiment at time of modification
+
+    Returns:
+        dict with logged event details
+    """
+    direction = "increase" if new_count > old_count else "decrease"
+    amount_change = abs(new_count - old_count)
+
+    return log_audit_event(
+        db, AuditEventType.PLAN_MODIFIED, case_id,
+        entity_type="payment_plan",
+        result="modified",
+        reason=(
+            f"Customer modified plan: {old_count} → {new_count} installments "
+            f"({direction} by {amount_change}) for {_format_amount(total_amount)}"
+        ),
+        amount=total_amount,
+        old_value={
+            "installment_count": old_count,
+            "modification_type": modification_type,
+        },
+        new_value={
+            "installment_count": new_count,
+            "modification_type": modification_type,
+        },
+        metadata={
+            "old_count": old_count,
+            "new_count": new_count,
+            "direction": direction,
+            "amount_change": amount_change,
+            "modification_type": modification_type,
+            "sentiment": sentiment,
+            "customer_message": (customer_message or "")[:200],
+        },
+    )
+
+
+def log_sub_split_created(
+    db,
+    case_id,
+    part_number: int,
+    part_amount: int,
+    sub_split_count: int,
+    parent_count: int,
+    total_amount: int,
+    customer_message: str = "",
+) -> dict:
+    """Log a sub-split event for analytics.
+
+    Tracks when a customer asks to split a specific installment into
+    smaller parts (e.g., "Split Part 1 of ₹7,499 into 2").
+
+    Args:
+        db: Database session
+        case_id: Recovery case UUID
+        part_number: Which part was split (1-indexed)
+        part_amount: Amount of the part being split (paise)
+        sub_split_count: How many sub-installments
+        parent_count: Original plan's installment count
+        total_amount: Total case amount (paise)
+        customer_message: Customer's original message (truncated)
+
+    Returns:
+        dict with logged event details
+    """
+    sub_amount = part_amount // sub_split_count
+
+    return log_audit_event(
+        db, AuditEventType.SUB_SPLIT_CREATED, case_id,
+        entity_type="payment_plan",
+        result="created",
+        reason=(
+            f"Sub-split: Part {part_number} ({_format_amount(part_amount)}) "
+            f"split into {sub_split_count} × {_format_amount(sub_amount)}"
+        ),
+        amount=part_amount,
+        old_value={
+            "part_number": part_number,
+            "part_amount": part_amount,
+            "parent_count": parent_count,
+        },
+        new_value={
+            "sub_split_count": sub_split_count,
+            "sub_amount": sub_amount,
+            "total_amount": total_amount,
+        },
+        metadata={
+            "part_number": part_number,
+            "part_amount": part_amount,
+            "sub_split_count": sub_split_count,
+            "parent_count": parent_count,
+            "sub_amount_per_installment": sub_amount,
+            "customer_message": (customer_message or "")[:200],
+        },
+    )
+
+
+def log_negotiation_pattern(
+    db,
+    case_id,
+    pattern_type: str,
+    total_negotiation_turns: int,
+    plan_changes: int,
+    final_count: int,
+    sentiment_history: list[str] | None = None,
+    outcome: str = "ongoing",
+) -> dict:
+    """Log a negotiation pattern event for analytics.
+
+    Tracks the overall negotiation flow to understand patterns:
+    - How many turns before agreement
+    - Whether customer kept changing terms
+    - Final sentiment trajectory
+    - Outcome (agreed, abandoned, escalated)
+
+    Args:
+        db: Database session
+        case_id: Recovery case UUID
+        pattern_type: "count_negotiation", "date_negotiation", "amount_negotiation"
+        total_negotiation_turns: Total inbound messages in negotiation
+        plan_changes: Number of times plan was modified
+        final_count: Final agreed installment count
+        sentiment_history: List of sentiment values during negotiation
+        outcome: "agreed", "abandoned", "escalated", "ongoing"
+
+    Returns:
+        dict with logged event details
+    """
+    sentiment_trajectory = " → ".join(sentiment_history[-5:]) if sentiment_history else "unknown"
+
+    return log_audit_event(
+        db, AuditEventType.NEGOTIATION_PATTERN, case_id,
+        result=outcome,
+        reason=(
+            f"Negotiation: {total_negotiation_turns} turns, {plan_changes} changes, "
+            f"final: {final_count} installments, outcome: {outcome}"
+        ),
+        metadata={
+            "pattern_type": pattern_type,
+            "total_negotiation_turns": total_negotiation_turns,
+            "plan_changes": plan_changes,
+            "final_count": final_count,
+            "sentiment_trajectory": sentiment_trajectory,
+            "sentiment_history": (sentiment_history or [])[-10:],
+            "outcome": outcome,
+        },
+    )
+
+
+def log_cooperative_engagement(
+    db,
+    case_id,
+    customer_message: str,
+    sentiment: str,
+    attempt_count: int,
+    max_attempts: int,
+    deferred_stop: bool = False,
+) -> dict:
+    """Log cooperative engagement that deferred a stop condition.
+
+    Tracks when a customer's cooperative sentiment prevents the case
+    from being marked as LOST/STOPPED despite reaching max attempts.
+
+    Args:
+        db: Database session
+        case_id: Recovery case UUID
+        customer_message: Customer's message (truncated)
+        sentiment: Detected sentiment
+        attempt_count: Current attempt count
+        max_attempts: Maximum allowed attempts
+        deferred_stop: Whether stop was deferred
+
+    Returns:
+        dict with logged event details
+    """
+    return log_audit_event(
+        db, AuditEventType.NEGOTIATION_PATTERN, case_id,
+        result="deferred" if deferred_stop else "active",
+        reason=(
+            f"Cooperative engagement: sentiment={sentiment}, "
+            f"attempts={attempt_count}/{max_attempts}, "
+            f"stop_deferred={deferred_stop}"
+        ),
+        metadata={
+            "sentiment": sentiment,
+            "attempt_count": attempt_count,
+            "max_attempts": max_attempts,
+            "deferred_stop": deferred_stop,
+            "customer_message": (customer_message or "")[:200],
         },
     )
 

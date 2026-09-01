@@ -47,6 +47,180 @@ def _create_case(db, customer, amount=1999900):
     return case
 
 
+class TestFullRecoveryStateMachine:
+    """End-to-end failed -> promise -> pay-now -> fully finalized recovery.
+
+    Verifies the deterministic terminal guarantee: after pay-now the case is
+    RECOVERED with every open bookkeeping row settled (ACTIVE promise
+    fulfilled, reminder/actions cancelled, invoices PAID) and NO ₹0 payment
+    card is ever emitted.
+    """
+
+    def test_promise_then_pay_now_fully_finalized(self, db_session):
+        from sqlalchemy import select
+
+        from app.models.invoice import Invoice
+        from app.models.promise import Promise, PromiseStatus
+        from app.models.scheduled_action import ScheduledAction
+        from app.routes.case_detail import (
+            SimulateMessageRequest,
+            simulate_customer_message,
+        )
+
+        c = _create_customer(db_session, ext_id="cust_flow_1", phone="919999720001")
+        case = _create_case(db_session, c)
+        case_id = case.id
+
+        # --- 1. Customer promises to pay -> real Promise + tomorrow reminder ---
+        promised = simulate_customer_message(
+            case_id, SimulateMessageRequest(trigger="promise"), db_session
+        )
+        assert promised["case_status"] == "PROMISED"
+        assert promised["promise_scheduled"] is not None
+
+        promises = list(
+            db_session.execute(
+                select(Promise).where(Promise.recovery_case_id == case_id)
+            ).scalars()
+        )
+        assert len(promises) == 1
+        assert promises[0].status == PromiseStatus.ACTIVE.value
+
+        pending_actions = list(
+            db_session.execute(
+                select(ScheduledAction).where(
+                    ScheduledAction.recovery_case_id == case_id,
+                    ScheduledAction.status == "pending",
+                )
+            ).scalars()
+        )
+        assert pending_actions
+
+        # --- 2. Pay now -> finalize (RECOVERED, promise fulfilled, cleaned up) ---
+        paid = simulate_customer_message(
+            case_id, SimulateMessageRequest(trigger="pay_now"), db_session
+        )
+        assert paid["case_status"] == "RECOVERED"
+        assert paid["recovered"] is True
+        assert paid["remaining_amount"] == 0
+        assert paid["recovery_rate"] == 100.0
+
+        # No ₹0 / stale payment card is ever emitted on a recovered turn.
+        payload = paid["agent_payload"]
+        assert payload["payment_card"] is None
+        assert payload["split_options"] == []
+        assert payload["quick_replies"] == []
+        assert "₹0" not in paid["reply_text"]
+        assert "fully settled" in paid["reply_text"]
+
+        db_session.expire_all()
+        case = db_session.get(RecoveryCase, case_id)
+        assert case.status == RecoveryStatus.RECOVERED
+        assert case.remaining_amount == 0
+        assert case.recovered_amount == case.original_amount
+        assert case.closed_at is not None
+        assert case.extra_data.get("recovery_finalized") is True
+
+        # ACTIVE promise is fulfilled with timestamp + amount.
+        promises = list(
+            db_session.execute(
+                select(Promise).where(Promise.recovery_case_id == case_id)
+            ).scalars()
+        )
+        assert len(promises) == 1
+        assert promises[0].status == PromiseStatus.FULFILLED.value
+        assert promises[0].fulfilled_at is not None
+        assert promises[0].fulfilled_amount == promises[0].amount_promised
+
+        # All pending reminders are cancelled (Next Touchpoint queue clears).
+        pending_actions = list(
+            db_session.execute(
+                select(ScheduledAction).where(
+                    ScheduledAction.recovery_case_id == case_id,
+                    ScheduledAction.status == "pending",
+                )
+            ).scalars()
+        )
+        assert not pending_actions
+
+        # The finalizer materialized an Invoice and marked it PAID.
+        invoices = list(
+            db_session.execute(
+                select(Invoice).where(Invoice.recovery_case_id == case_id)
+            ).scalars()
+        )
+        assert invoices
+        assert all(inv.status == "PAID" for inv in invoices)
+        assert all(inv.paid_at is not None for inv in invoices)
+
+        # --- 3. A late "promise" must NOT re-open the recovered case ---
+        late = simulate_customer_message(
+            case_id, SimulateMessageRequest(trigger="promise"), db_session
+        )
+        assert late["case_status"] == "RECOVERED"
+        assert late["recovered"] is True
+        assert late["promise_scheduled"] is None
+        assert late["agent_payload"]["payment_card"] is None
+
+        db_session.expire_all()
+        case = db_session.get(RecoveryCase, case_id)
+        assert case.status == RecoveryStatus.RECOVERED
+        active_promises = list(
+            db_session.execute(
+                select(Promise).where(
+                    Promise.recovery_case_id == case_id,
+                    Promise.status == PromiseStatus.ACTIVE.value,
+                )
+            ).scalars()
+        )
+        assert not active_promises
+
+    def test_pay_later_chip_resolves_to_promise_and_finalizes(self, db_session):
+        from sqlalchemy import select
+
+        from app.models.promise import Promise, PromiseStatus
+        from app.models.scheduled_action import ScheduledAction
+        from app.routes.case_detail import (
+            SimulateMessageRequest,
+            simulate_customer_message,
+        )
+
+        c = _create_customer(db_session, ext_id="cust_flow_2", phone="919999720002")
+        case = _create_case(db_session, c)
+        case_id = case.id
+
+        later = simulate_customer_message(
+            case_id, SimulateMessageRequest(trigger="pay_later"), db_session
+        )
+        assert later["detected_intent"] == "PROMISE_TO_PAY"
+        assert later["promise_scheduled"] is not None
+
+        pay = simulate_customer_message(
+            case_id, SimulateMessageRequest(trigger="pay_now"), db_session
+        )
+        assert pay["case_status"] == "RECOVERED"
+        assert pay["agent_payload"]["payment_card"] is None
+
+        db_session.expire_all()
+        promises = list(
+            db_session.execute(
+                select(Promise).where(Promise.recovery_case_id == case_id)
+            ).scalars()
+        )
+        assert len(promises) == 1
+        assert promises[0].status == PromiseStatus.FULFILLED.value
+
+    def test_build_reply_zero_amount_never_emits_card(self):
+        payload = agent_engine.build_reply(
+            case_id=str(uuid.uuid4()), customer_name="Vinod",
+            amount_paise=0, intent="PAYMENT_LINK_REQUEST",
+        )
+        assert payload["payment_card"] is None
+        assert payload["split_options"] == []
+        assert payload["quick_replies"] == []
+        assert "₹0" not in payload["text"]
+
+
 # ---------------------------------------------------------------
 # 1. Installment calculator
 # ---------------------------------------------------------------
@@ -104,18 +278,18 @@ class TestHinglishAndHistory:
         assert "secure payment link" in payload["text"]
 
     def test_history_changes_acknowledgement(self):
-        # First occurrence -> "Thanks for reaching out"
+        # First occurrence -> context-aware ack ("Absolutely")
         first = agent_engine.build_reply(
             case_id=str(uuid.uuid4()), customer_name="Vinod", amount_paise=1000000,
             intent="PROMISE_TO_PAY", history=[],
         )
-        assert "Thanks" in first["text"]
-        # Repeat the same intent -> engine acknowledges dynamically ("Got it")
+        assert "Absolutely" in first["text"]
+        # Repeat the same intent -> engine acknowledges prior context ("As mentioned earlier")
         repeat = agent_engine.build_reply(
             case_id=str(uuid.uuid4()), customer_name="Vinod", amount_paise=1000000,
             intent="PROMISE_TO_PAY", history=["PROMISE_TO_PAY"],
         )
-        assert "Got it" in repeat["text"]
+        assert "As mentioned earlier" in repeat["text"]
 
 
 # ---------------------------------------------------------------
@@ -242,7 +416,10 @@ class TestNSplitPlan:
 
 
 class TestAttemptsCounter:
-    def test_attempts_increment_per_turn(self, db_session):
+    def test_replies_do_not_increment_outreach_attempts(self, db_session):
+        # Rule 5: inbound replies / negotiations do NOT burn the outreach
+        # attempt counter. Only a recorded promise (real outreach commitment)
+        # advances it — and then only once.
         from app.routes.case_detail import simulate_customer_message, SimulateMessageRequest
 
         c = _create_customer(db_session, ext_id="cust_att_1", phone="919999700008")
@@ -255,7 +432,8 @@ class TestAttemptsCounter:
         r2 = simulate_customer_message(
             case.id, SimulateMessageRequest(trigger="installments"), db_session
         )
-        assert r2["attempt_count"] == 2
+        # Installation negotiation is an active dialogue, not an outreach turn.
+        assert r2["attempt_count"] == 1
 
 
 # ---------------------------------------------------------------
@@ -326,7 +504,10 @@ class TestLanguagePersistence:
         assert back["language"] == "en"
         # English template re-engaged (not the Hinglish "Bilkul ..." copy).
         assert "Bilkul" not in back["reply_text"]
-        assert "paused reminders" in back["reply_text"]
+        # The language chip resolves to a deterministic English switch ack and
+        # is NOT misinterpreted as a promise to pay (no reminder scheduled).
+        assert "switch to English" in back["reply_text"]
+        assert back["promise_scheduled"] is None
 
 
 class TestLocalizedHinglish:

@@ -112,15 +112,15 @@ export default function InvoicesPage() {
       label: "Paid",
       value: formatINR(totalPaid),
       icon: CheckCircle2,
-      accent: "text-emerald-400",
-      iconBox: "bg-emerald-500/10 text-emerald-400",
+      accent: "text-accent",
+      iconBox: "bg-accent-soft text-accent",
     },
     {
       label: "Outstanding",
       value: formatINR(totalOutstanding),
       icon: TrendingUp,
-      accent: "text-cyan-400",
-      iconBox: "bg-cyan-500/10 text-cyan-400",
+      accent: "text-royal",
+      iconBox: "bg-royal-soft text-royal",
     },
   ]
 
@@ -149,7 +149,7 @@ export default function InvoicesPage() {
         </div>
         <button
           onClick={() => setShowCreate(true)}
-          className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-indigo-600/20 transition-colors hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+          className="inline-flex items-center gap-2 rounded-lg bg-royal px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-royal/80"
         >
           <Plus className="h-4 w-4" />
           New Invoice
@@ -161,7 +161,7 @@ export default function InvoicesPage() {
         {metrics.map((m) => (
           <div
             key={m.label}
-            className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/50 p-4"
+            className="flex items-center gap-3 rounded-xl border border-edge bg-panel p-4"
           >
             <span className={`flex h-9 w-9 items-center justify-center rounded-lg ${m.iconBox}`}>
               <m.icon className="h-4 w-4" />
@@ -182,7 +182,7 @@ export default function InvoicesPage() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search invoices by ID, customer name…"
-            className="w-full rounded-lg border border-slate-800 bg-slate-900/60 py-2 pl-9 pr-3 text-sm text-slate-200 placeholder:text-slate-500 transition-colors focus:border-indigo-500/50 focus:outline-none focus:ring-1 focus:ring-indigo-500/40"
+            className="w-full rounded-lg border border-edge bg-panel-2 py-2 pl-9 pr-3 text-sm text-slate-200 placeholder:text-slate-500 transition-colors focus:border-indigo-500/50 focus:outline-none focus:ring-1 focus:ring-indigo-500/40"
           />
         </div>
         <div className="flex items-center gap-2">
@@ -191,14 +191,14 @@ export default function InvoicesPage() {
             type="date"
             value={dateFrom}
             onChange={(e) => setDateFrom(e.target.value)}
-            className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs text-slate-300 transition-colors focus:border-indigo-500/50 focus:outline-none focus:ring-1 focus:ring-indigo-500/40"
+            className="rounded-lg border border-edge bg-panel-2 px-3 py-2 text-xs text-slate-300 transition-colors focus:border-indigo-500/50 focus:outline-none focus:ring-1 focus:ring-indigo-500/40"
           />
           <span className="text-xs text-slate-600">to</span>
           <input
             type="date"
             value={dateTo}
             onChange={(e) => setDateTo(e.target.value)}
-            className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs text-slate-300 transition-colors focus:border-indigo-500/50 focus:outline-none focus:ring-1 focus:ring-indigo-500/40"
+            className="rounded-lg border border-edge bg-panel-2 px-3 py-2 text-xs text-slate-300 transition-colors focus:border-indigo-500/50 focus:outline-none focus:ring-1 focus:ring-indigo-500/40"
           />
           {hasFilters && (
             <button
@@ -208,7 +208,7 @@ export default function InvoicesPage() {
                 setDateTo("")
                 setStatus("all")
               }}
-              className="rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-xs text-slate-400 transition-colors hover:text-slate-200"
+              className="rounded-lg border border-edge bg-panel px-3 py-2 text-xs text-slate-400 transition-colors hover:text-slate-200"
             >
               Clear
             </button>
@@ -225,7 +225,7 @@ export default function InvoicesPage() {
             className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
               status === tab.key
                 ? "border-indigo-500/40 bg-indigo-600/15 text-indigo-300"
-                : "border-slate-800 bg-slate-900 text-slate-400 hover:text-slate-300"
+                : "border-edge bg-panel text-slate-400 hover:text-slate-300"
             }`}
           >
             {tab.label} <span className="ml-1 opacity-70">{tab.count}</span>
@@ -246,7 +246,7 @@ export default function InvoicesPage() {
             {invoices.length === 0 && !hasFilters ? (
               <EmptyInvoicesState onCreateAction={() => setShowCreate(true)} />
             ) : (
-              <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-slate-800 bg-slate-900/40 px-6 py-14 text-center">
+              <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-edge bg-panel-2 px-6 py-14 text-center">
                 <Search className="h-8 w-8 text-slate-600" />
                 <p className="mt-3 text-sm font-medium text-slate-300">No invoices match your filters</p>
                 <p className="mt-1 text-xs text-slate-500">Try a different date range or search term.</p>
@@ -257,7 +257,7 @@ export default function InvoicesPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead>
-                <tr className="border-b border-slate-800 text-xs uppercase tracking-wide text-slate-500">
+                <tr className="border-b border-edge text-xs uppercase tracking-wide text-slate-500">
                   <th className="px-4 py-3 font-medium">Invoice</th>
                   <th className="px-4 py-3 font-medium">Customer</th>
                   <th className="px-4 py-3 font-medium">Amount</th>
@@ -279,7 +279,7 @@ export default function InvoicesPage() {
                   return (
                     <tr
                       key={inv.id}
-                      className="border-b border-slate-800/50 transition-colors last:border-0 hover:bg-slate-800/40"
+                      className="border-b border-edge/50 transition-colors last:border-0 hover:bg-panel-2"
                     >
                       <td className="px-4 py-3">
                         <span className="font-mono text-xs font-medium text-slate-300">
@@ -388,18 +388,12 @@ export default function InvoicesPage() {
  */
 function EmptyInvoicesState({ onCreateAction }: { onCreateAction: () => void }) {
   return (
-    <div className="relative flex flex-col items-center justify-center overflow-hidden rounded-2xl border border-slate-800 bg-gradient-to-b from-slate-900/80 to-slate-950/60 px-6 py-16 text-center">
-      {/* soft radial glow behind the icon */}
-      <div className="pointer-events-none absolute -top-20 left-1/2 h-40 w-40 -translate-x-1/2 rounded-full bg-indigo-600/20 blur-3xl" />
-      <div className="pointer-events-none absolute -bottom-24 right-1/4 h-40 w-40 rounded-full bg-cyan-500/10 blur-3xl" />
-
-      {/* dark-glass icon badge */}
-      <div className="relative flex h-20 w-20 items-center justify-center rounded-full border border-slate-700/60 bg-slate-800/40 shadow-[inset_0_1px_0_rgba(255,255,255,0.08)] backdrop-blur">
-        <div className="absolute inset-0 rounded-full border border-white/5" />
-        <Receipt className="h-9 w-9 text-indigo-300" />
+    <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-edge bg-panel-2 px-6 py-16 text-center">
+      <div className="flex h-16 w-16 items-center justify-center rounded-full border border-edge bg-panel">
+        <Receipt className="h-8 w-8 text-royal" />
       </div>
 
-      <h3 className="mt-6 text-lg font-semibold text-slate-100">
+      <h3 className="mt-5 text-lg font-semibold text-slate-200">
         No recovery invoices yet
       </h3>
       <p className="mt-2 max-w-md text-sm leading-relaxed text-slate-500">
@@ -408,21 +402,21 @@ function EmptyInvoicesState({ onCreateAction }: { onCreateAction: () => void }) 
         customer opens theirs, you'll see it here.
       </p>
 
-      <div className="mt-7 flex flex-col gap-3 sm:flex-row">
+      <div className="mt-6 flex flex-col gap-3 sm:flex-row">
         <button
           onClick={onCreateAction}
-          className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-indigo-600/25 transition-colors hover:bg-indigo-500"
+          className="inline-flex items-center justify-center gap-2 rounded-lg bg-royal px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-royal/80"
         >
           <Link2 className="h-4 w-4" />
           Create Payment Link
         </button>
-        <button className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-700 bg-slate-800/40 px-5 py-2.5 text-sm font-medium text-slate-200 transition-colors hover:bg-slate-800">
+        <button className="inline-flex items-center justify-center gap-2 rounded-lg border border-edge bg-panel px-5 py-2.5 text-sm font-medium text-slate-200 transition-colors hover:bg-elevated">
           <Sparkles className="h-4 w-4 text-cyan-400" />
           Generate Sample Invoice
         </button>
       </div>
 
-      <p className="mt-5 flex items-center gap-1.5 text-xs text-slate-600">
+      <p className="mt-5 text-xs text-slate-600">
         Tip: trigger a test webhook from the Simulation page to populate this list instantly.
       </p>
     </div>
@@ -438,15 +432,14 @@ function CreateInvoiceModal({ onClose }: { onClose: () => void }) {
   const [amount, setAmount] = useState("")
   const [customer, setCustomer] = useState("")
 
-  return (
-    <div
-      className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-sm"
-      onClick={onClose}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="flex h-full w-full max-w-md flex-col border-l border-slate-800 bg-slate-950 p-6 shadow-2xl"
+  return (      <div
+        className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-sm"
+        onClick={onClose}
       >
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="flex h-full w-full max-w-md flex-col border-l border-edge bg-canvas p-6 shadow-2xl"
+        >
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-600/15 text-indigo-300">
@@ -454,10 +447,10 @@ function CreateInvoiceModal({ onClose }: { onClose: () => void }) {
             </span>
             <h2 className="text-lg font-semibold text-slate-100">New Invoice</h2>
           </div>
-          <button
-            onClick={onClose}
-            className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-slate-800 hover:text-slate-200"
-          >
+        <button
+          onClick={onClose}
+          className="rounded-lg p-2 text-slate-400 transition-colors hover:bg-elevated hover:text-slate-200"
+        >
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -475,7 +468,7 @@ function CreateInvoiceModal({ onClose }: { onClose: () => void }) {
               value={customer}
               onChange={(e) => setCustomer(e.target.value)}
               placeholder="customer@company.com"
-              className="w-full rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2.5 text-sm text-slate-200 placeholder:text-slate-500 focus:border-indigo-500/50 focus:outline-none focus:ring-1 focus:ring-indigo-500/40"
+              className="w-full rounded-lg border border-edge bg-panel-2 px-3 py-2.5 text-sm text-slate-200 placeholder:text-slate-500 focus:border-indigo-500/50 focus:outline-none focus:ring-1 focus:ring-indigo-500/40"
             />
           </div>
           <div>
@@ -487,7 +480,7 @@ function CreateInvoiceModal({ onClose }: { onClose: () => void }) {
               onChange={(e) => setAmount(e.target.value)}
               inputMode="numeric"
               placeholder="0.00"
-              className="w-full rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2.5 text-sm text-slate-200 placeholder:text-slate-500 focus:border-indigo-500/50 focus:outline-none focus:ring-1 focus:ring-indigo-500/40"
+              className="w-full rounded-lg border border-edge bg-panel-2 px-3 py-2.5 text-sm text-slate-200 placeholder:text-slate-500 focus:border-indigo-500/50 focus:outline-none focus:ring-1 focus:ring-indigo-500/40"
             />
           </div>
         </div>
@@ -512,7 +505,7 @@ function CreateInvoiceModal({ onClose }: { onClose: () => void }) {
         <div className="mt-auto pt-6">
           <button
             onClick={onClose}
-            className="w-full rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-indigo-500"
+            className="w-full rounded-lg bg-royal px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-royal/80"
           >
             Create Invoice
           </button>

@@ -30,7 +30,9 @@ logger = logging.getLogger(__name__)
 OPEN_STATUSES = {
     "AT_RISK",
     "RECOVERY_IN_PROGRESS",
+    "ENGAGED",
     "PROMISED",
+    "PAYMENT_PLAN",
     "SCHEDULED",
     "PARTIALLY_RECOVERED",
 }
@@ -97,6 +99,21 @@ def compute_revenue_map(db: Session) -> dict:
     plans_recovered = sum(p.amount_paid for p in plans)
     plans_remaining = max(plans_total - plans_recovered, 0)
 
+    # Cost of recovery outreach: count every where-channel outreach row so the
+    # dashboard can show cost-per-verified-rupee without claiming precision.
+    from app.models.recovery_attempt import RecoveryAttempt
+
+    attempts = list(db.execute(select(RecoveryAttempt)).scalars().all())
+    whatsapp_messages = sum(1 for a in attempts if a.channel == "whatsapp")
+    emails_sent = sum(1 for a in attempts if a.channel == "email")
+
+    from app.config import get_settings
+
+    cost_settings = get_settings()
+    whatsapp_cost = whatsapp_messages * cost_settings.recovery_cost_per_whatsapp_paise
+    email_cost = emails_sent * cost_settings.recovery_cost_per_email_paise
+    total_cost_paise = whatsapp_cost + email_cost
+
     total_revenue = 0
     at_risk_revenue = 0
     lost_revenue = 0
@@ -111,6 +128,8 @@ def compute_revenue_map(db: Session) -> dict:
     risk_counts: dict = defaultdict(int)
     language_totals: dict = defaultdict(int)
     language_counts: dict = defaultdict(int)
+    failure_reason_totals: dict = defaultdict(int)
+    failure_reason_counts: dict = defaultdict(int)
 
     promise_cases: set = set()
     promise_amount = 0
@@ -154,6 +173,9 @@ def compute_revenue_map(db: Session) -> dict:
             lang = language_by_case.get(case.id, "en")
             language_totals[lang] += paid
             language_counts[lang] += 1
+            root_cause = (case.extra_data or {}).get("root_cause", "unknown")
+            failure_reason_totals[root_cause] += paid
+            failure_reason_counts[root_cause] += 1
 
             paid_times = [p.paid_at for p in case_payments if p.paid_at]
             if paid_times and case.created_at:
@@ -247,6 +269,16 @@ def compute_revenue_map(db: Session) -> dict:
 
     timeline = _build_timeline(all_cases, captured, earliest_created, latest_paid_at)
 
+    # Unified recovery-pipeline tracker: FAILED → CONTACTED → ENGAGED → PROMISED
+    # → RECOVERED (+ ESCALATED / HARD_DROPPED terminal branches).
+    from app.services.recovery_state import pipeline_from_cases
+
+    try:
+        recovery_pipeline = pipeline_from_cases(db, all_cases)
+    except Exception:  # noqa: BLE001 - tracker must never break analytics
+        logger.warning("recovery pipeline computation failed", exc_info=True)
+        recovery_pipeline = []
+
     return {
         "total_revenue": total_revenue,
         "at_risk_revenue": at_risk_revenue,
@@ -263,6 +295,19 @@ def compute_revenue_map(db: Session) -> dict:
         "recovery_by_channel": channel_slices,
         "recovery_by_risk_level": risk_slices,
         "recovery_by_language": language_slices,
+        "recovery_by_failure_reason": [
+            {
+                "failure_reason": reason,
+                "name": reason.replace("_", " ").title(),
+                "amount": failure_reason_totals[reason],
+                "count": failure_reason_counts[reason],
+            }
+            for reason in sorted(
+                failure_reason_totals,
+                key=lambda r: failure_reason_totals[r],
+                reverse=True,
+            )
+        ],
         "payment_plan_recovery": {
             "plans_count": plans_count,
             "total_amount": plans_total,
@@ -282,6 +327,18 @@ def compute_revenue_map(db: Session) -> dict:
             ),
         },
         "recovery_timeline": timeline,
+        "recovery_pipeline": recovery_pipeline,
+        "recovery_cost": {
+            "whatsapp_messages": whatsapp_messages,
+            "emails": emails_sent,
+            "whatsapp_cost_paise": whatsapp_cost,
+            "email_cost_paise": email_cost,
+            "total_cost_paise": total_cost_paise,
+            "recovered_revenue": recovered_revenue,
+            "cost_of_recovery_ratio": round(
+                total_cost_paise / recovered_revenue if recovered_revenue else 0.0, 6
+            ),
+        },
     }
 
 
@@ -363,6 +420,7 @@ def _empty_payload() -> dict:
         "recovery_by_channel": [],
         "recovery_by_risk_level": [],
         "recovery_by_language": [],
+        "recovery_by_failure_reason": [],
         "payment_plan_recovery": {
             "plans_count": 0,
             "total_amount": 0,
@@ -378,4 +436,14 @@ def _empty_payload() -> dict:
             "recovery_rate": 0.0,
         },
         "recovery_timeline": [],
+        "recovery_pipeline": [],
+        "recovery_cost": {
+            "whatsapp_messages": 0,
+            "emails": 0,
+            "whatsapp_cost_paise": 0,
+            "email_cost_paise": 0,
+            "total_cost_paise": 0,
+            "recovered_revenue": 0,
+            "cost_of_recovery_ratio": 0.0,
+        },
     }

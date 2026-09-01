@@ -350,3 +350,30 @@ def get_plan_retry_sequencer(plan_id, db: Session = Depends(get_db)):
         "blocked": result.blocked,
         "block_reason": result.block_reason,
     }
+
+
+# ============================================================
+# AUTONOMOUS SCHEDULER OPS
+# ============================================================
+
+
+@router.post("/autonomous/scheduler/run")
+def run_autonomous_scheduler(db: Session = Depends(get_db)):
+    """Run one background scheduler pass over all due actions.
+
+    Polls for scheduled actions whose ``scheduled_for`` has passed and processes
+    them through the full guardrail pipeline (terminal states, opt-out, dispute,
+    max attempts, recovered payment all cancel the action before outreach). This
+    is the same routine the long-lived background loop runs on its interval, and
+    is exposed as a manual ops trigger for on-demand reconciliation.
+    """
+    from app.services.scheduler import process_due_actions
+
+    results = process_due_actions(db)
+    return {
+        "total_due": results["total_due"],
+        "executed": results["executed"],
+        "cancelled": results["cancelled"],
+        "skipped": results["skipped"],
+        "details": results["details"],
+    }

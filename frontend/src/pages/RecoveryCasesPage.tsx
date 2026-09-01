@@ -13,7 +13,9 @@ const STATUS_TABS: { key: string; label: string }[] = [
   { key: "all", label: "All" },
   { key: "AT_RISK", label: "At Risk" },
   { key: "RECOVERY_IN_PROGRESS", label: "In Progress" },
+  { key: "ENGAGED", label: "Engaged" },
   { key: "PROMISED", label: "Promised" },
+  { key: "PAYMENT_PLAN", label: "Payment Plan" },
   { key: "SCHEDULED", label: "Scheduled" },
   { key: "PARTIALLY_RECOVERED", label: "Partially Recovered" },
   { key: "RECOVERED", label: "Recovered" },
@@ -84,7 +86,7 @@ export default function RecoveryCasesPage() {
               className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
                 active
                   ? "border-blue-500/40 bg-blue-600/15 text-blue-400"
-                  : "border-slate-800 bg-slate-900 text-slate-400 hover:border-slate-700 hover:text-slate-300"
+                  : "border-edge bg-panel text-slate-400 hover:border-edge-strong hover:text-slate-300"
               }`}
             >
               {tab.label} <span className="ml-1 opacity-70">{count}</span>
@@ -100,7 +102,7 @@ export default function RecoveryCasesPage() {
           <select
             value={risk}
             onChange={(e) => setRisk(e.target.value)}
-            className="rounded-lg border border-slate-800 bg-slate-900 px-3 py-1.5 text-sm text-slate-200"
+            className="rounded-lg border border-edge bg-panel px-3 py-1.5 text-sm text-slate-200"
           >
             {RISKS.map((r) => (
               <option key={r} value={r}>
@@ -122,7 +124,7 @@ export default function RecoveryCasesPage() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search by customer or email…"
-            className="w-full rounded-lg border border-slate-800 bg-slate-900 py-1.5 pl-9 pr-3 text-sm text-slate-200 placeholder:text-slate-600"
+            className="w-full rounded-lg border border-edge bg-panel py-1.5 pl-9 pr-3 text-sm text-slate-200 placeholder:text-slate-600"
           />
         </div>
         <div className="ml-auto text-sm text-slate-500">
@@ -150,7 +152,7 @@ export default function RecoveryCasesPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead>
-                <tr className="border-b border-slate-800 text-xs uppercase tracking-wide text-slate-500">
+                <tr className="border-b border-edge text-xs uppercase tracking-wide text-slate-500">
                   <th className="px-4 py-3 font-medium">Customer</th>
                   <th className="px-4 py-3 font-medium">Original</th>
                   <th className="px-4 py-3 font-medium">Recovered</th>
@@ -168,7 +170,7 @@ export default function RecoveryCasesPage() {
                   return (
                     <tr
                       key={c.id}
-                      className="border-b border-slate-800/50 transition-colors last:border-0 hover:bg-slate-800/40"
+                      className="border-b border-edge/50 transition-colors last:border-0 hover:bg-panel-2"
                     >
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">

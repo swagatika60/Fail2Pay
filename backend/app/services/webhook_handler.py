@@ -10,6 +10,7 @@ All processing is idempotent - duplicate webhooks are detected and skipped.
 import hashlib
 import hmac
 import logging
+import time
 
 from sqlalchemy.orm import Session
 
@@ -22,7 +23,7 @@ from app.crud.recovery_case import (
 )
 from app.crud.revenue_event import create_revenue_event, get_revenue_events_by_customer
 from app.crud.webhook_event import get_webhook_event_by_event_id, store_webhook_event
-from app.models.recovery_case import RecoveryStatus
+from app.models.recovery_case import RecoveryCase, RecoveryStatus
 from app.schemas.audit_event import AuditEventCreate
 from app.schemas.customer import CustomerCreate
 from app.schemas.recovery_case import RecoveryCaseCreate
@@ -79,6 +80,7 @@ def process_payment_failed(db: Session, payload: dict) -> dict:
     Returns:
         dict with status and case_id if a new case was created
     """
+    _t0 = time.monotonic()
     event_id = payload.get("id", "")
     payment = payload.get("payload", {}).get("payment", {}).get("entity", {})
 
@@ -160,9 +162,23 @@ def process_payment_failed(db: Session, payload: dict) -> dict:
         ),
     )
 
-    # --- Step 3: Assess risk via Revenue Risk Engine ---
+# --- Step 3: Assess risk via Revenue Risk Engine ---
     from app.crud.recovery_case import create_recovery_case
+    from app.services import agent_steps
     from app.services.revenue_risk import assess_and_log_risk, assess_risk
+
+    # --- Step 3a: Root-cause diagnosis (agent reasoning step) ---
+    # Classify the failure into a canonical root cause so the negotiation
+    # engine picks the bounded intervention. The diagnosis is streamed live
+    # (and persisted) once the case exists (Step 3b).
+    from app.services.root_cause import classify_root_cause
+
+    diagnosis = classify_root_cause(
+        failure_code=failure_code,
+        failure_reason=failure_reason,
+        event_type="payment_failed",
+        extra={"method": method, "order_id": order_id},
+    )
 
     assessment = assess_risk(
         db=db,
@@ -239,6 +255,45 @@ def process_payment_failed(db: Session, payload: dict) -> dict:
         },
     )
 
+    # --- Step 7c: Stream the reasoning chain (Agent Thought Stream) ---
+    # [Trigger Received] -> [Root Cause: ...] -> [Policy Check] -> [Action]
+    # Each step is persisted to the audit trail AND pushed live over WebSocket.
+    agent_steps.emit_case_step(
+        db,
+        case_id=str(recovery_case.id),
+        stage=agent_steps.AgentStage.TRIGGER,
+        label="Trigger Received",
+        detail=f"payment.failed · {failure_code or failure_reason or 'no gateway code'}",
+        confidence=1.0,
+        latency_ms=int((time.monotonic() - _t0) * 1000),
+        extra={"payment_id": payment_id, "amount": amount, "method": method},
+    )
+    agent_steps.emit_case_step(
+        db,
+        case_id=str(recovery_case.id),
+        stage=agent_steps.AgentStage.DIAGNOSIS,
+        label=f"Root Cause: {diagnosis.label}",
+        detail=diagnosis.explanation,
+        confidence=diagnosis.confidence,
+        extra=diagnosis.to_dict(),
+    )
+    agent_steps.emit_case_step(
+        db,
+        case_id=str(recovery_case.id),
+        stage=agent_steps.AgentStage.POLICY,
+        label="Policy Check: Recoverable",
+        detail=(
+            f"risk={assessment.risk_level} · recoverable={assessment.is_recoverable} · "
+            f"max_attempts={max_attempts} · intervention={diagnosis.recommended_intervention}"
+        ),
+        confidence=1.0,
+        extra={
+            "risk_level": assessment.risk_level,
+            "is_recoverable": assessment.is_recoverable,
+            "recommended_intervention": diagnosis.recommended_intervention,
+        },
+    )
+
     logger.info(
         "Created recovery case %s for failed payment %s (amount: %d)",
         recovery_case.id,
@@ -257,12 +312,36 @@ def process_payment_failed(db: Session, payload: dict) -> dict:
         recovery_result.get("status"),
     )
 
+    action_t0 = time.monotonic()
+    action_label = "Action Dispatched"
+    if recovery_result.get("status") == "initiated":
+        action_label = "Recovery Initiated: WhatsApp"
+    elif recovery_result.get("status") == "skipped":
+        action_label = "Policy Blocked: Skipped"
+    agent_steps.emit_case_step(
+        db,
+        case_id=str(recovery_case.id),
+        stage=agent_steps.AgentStage.ACTION,
+        label=action_label,
+        detail=recovery_result.get("reason") or recovery_result.get("error")
+        or f"case_status={recovery_result.get('status')}",
+        confidence=0.98,
+        latency_ms=int((time.monotonic() - action_t0) * 1000),
+        extra={"recovery_result": recovery_result},
+    )
+
+    # --- Step 9: Auto-send the payment-failed notification email ---
+    # The customer gets a transactional email as soon as the agent detects the
+    # failure (the recovery case is created), carrying the retry payment link.
+    _auto_send_failed_payment_email(db, recovery_case, amount)
+
     return {
         "status": "processed",
         "case_id": str(recovery_case.id),
         "payment_id": payment_id,
         "recovery_initiated": recovery_result.get("status") == "initiated",
         "recovery_result": recovery_result,
+        "diagnosis": diagnosis.to_dict(),
     }
 
 
@@ -316,6 +395,42 @@ def process_payment_captured(db: Session, payload: dict) -> dict:
             method=method,
             extra_data={"source": "razorpay_webhook", "channel": "payment_plan"},
         )
+        plan_case = db.get(RecoveryCase, installment.recovery_case_id)
+        _emit_ledger_capture_step(
+            db,
+            plan_case,
+            payment_id=payment_id,
+            amount=amount,
+            method=method,
+        )
+
+        # Plan completion settles the case in full → run the deterministic
+        # finalizer (fulfill promises, close the plan, cancel emails/links,
+        # mark invoices paid) and send the loop-termination confirmation, then
+        # stream the typed events the non-installment path already emits.
+        if plan_case and plan_case.remaining_amount <= 0:
+            from datetime import datetime, timezone
+
+            from app.services.realtime import publish_case_event
+            from app.services.workflow_engine import finalize_recovered_case
+
+            finalize_recovered_case(db, plan_case, reason="installment_plan_completed")
+            _send_settlement_confirmation(
+                db, plan_case, amount_paise=plan_case.original_amount
+            )
+            occurred = datetime.now(timezone.utc).isoformat()
+            publish_case_event(
+                event_type="payment_captured",
+                case_id=str(plan_case.id),
+                data={
+                    "payment_id": payment_id,
+                    "amount": amount,
+                    "remaining_amount": 0,
+                    "recovered_amount": plan_case.recovered_amount,
+                },
+                occurred_at=occurred,
+            )
+
         logger.info(
             "Installment payment captured: installment=%s, case=%s",
             installment.id,
@@ -351,6 +466,8 @@ def process_payment_captured(db: Session, payload: dict) -> dict:
     recovery_cases = (
         get_recovery_cases_by_status(db, RecoveryStatus.AT_RISK)
         + get_recovery_cases_by_status(db, RecoveryStatus.RECOVERY_IN_PROGRESS)
+        + get_recovery_cases_by_status(db, RecoveryStatus.ENGAGED)
+        + get_recovery_cases_by_status(db, RecoveryStatus.PAYMENT_PLAN)
         + get_recovery_cases_by_status(db, RecoveryStatus.PARTIALLY_RECOVERED)
         + get_recovery_cases_by_status(db, RecoveryStatus.PROMISED)
         + get_recovery_cases_by_status(db, RecoveryStatus.SCHEDULED)
@@ -388,28 +505,70 @@ def process_payment_captured(db: Session, payload: dict) -> dict:
         method=method,
         extra_data={"source": "razorpay_webhook"},
     )
+    _emit_ledger_capture_step(
+        db, target_case, payment_id=payment_id, amount=amount, method=method
+    )
 
     # --- Step 5 & 6: Mark RECOVERED if fully paid ---
     old_status = target_case.status
     if target_case.remaining_amount <= 0:
-        target_case.status = RecoveryStatus.RECOVERED
         from datetime import datetime, timezone
 
-        target_case.closed_at = datetime.now(timezone.utc)
+        from app.services.realtime import publish_case_event
+        from app.services.workflow_engine import finalize_recovered_case
 
-        # HARD STOP: cancel any future scheduled recovery actions
-        from app.crud.scheduled_action import cancel_pending_actions_for_case
+        # Run the deterministic finalizer: settle amounts + RECOVERED, fulfil
+        # any ACTIVE promise, close any open payment plan, cancel every pending
+        # scheduled action + PENDING email, expire any stale payment link and
+        # mark the case's invoices PAID (idempotent).
+        finalize_recovered_case(db, target_case, reason="payment_captured")
 
-        cancel_pending_actions_for_case(
-            db, target_case.id, reason="recovered_payment_captured"
-        )
         logger.info(
             "Recovery case %s fully recovered (amount: %d)",
             target_case.id,
             target_case.recovered_amount,
         )
+
+        # Settlement confirmation: tell the customer the payment is reconciled
+        # and push it to the live audit stream. This is the loop-termination
+        # message for a fully settled case.
+        _send_settlement_confirmation(
+            db,
+            target_case,
+            amount_paise=target_case.original_amount,
+        )
+
+        # Typed payment event for the ops console. The finalizer emits the
+        # richer recovery_completed / case_status_changed events.
+        occurred = datetime.now(timezone.utc).isoformat()
+        publish_case_event(
+            event_type="payment_captured",
+            case_id=str(target_case.id),
+            data={
+                "payment_id": payment_id,
+                "amount": amount,
+                "remaining_amount": 0,
+                "recovered_amount": target_case.recovered_amount,
+            },
+            occurred_at=occurred,
+        )
     else:
         target_case.status = RecoveryStatus.PARTIALLY_RECOVERED
+
+        from datetime import datetime as _dt, timezone as _tz
+        from app.services.realtime import publish_case_event
+
+        publish_case_event(
+            event_type="payment_captured",
+            case_id=str(target_case.id),
+            data={
+                "payment_id": payment_id,
+                "amount": amount,
+                "remaining_amount": target_case.remaining_amount,
+                "recovered_amount": target_case.recovered_amount,
+            },
+            occurred_at=_dt.now(_tz.utc).isoformat(),
+        )
 
     db.commit()
     db.refresh(target_case)
@@ -444,6 +603,240 @@ def process_payment_captured(db: Session, payload: dict) -> dict:
         "payment_id": payment_id,
         "recovered_amount": target_case.recovered_amount,
         "remaining_amount": target_case.remaining_amount,
+    }
+
+
+def process_mandate_auth_failed(db: Session, payload: dict) -> dict:
+    """Handle ``subscription.auth.failed`` — a recurring mandate drop.
+
+    A failed authorization means the stored mandate can no longer charge the
+    customer (declined / expired / instrument changed). This is a distinct
+    revenue-at-risk trigger: the root cause is always a mandate lifecycle
+    problem, and the intervention is a smart mandate re-setup (never blind
+    re-charging of the same dead mandate).
+
+    Reuses the same ingestion path as ``payment.failed`` (revenue event →
+    risk → recovery case → streamed reasoning chain) so mandate drops surface
+    in the exact same pipeline.
+    """
+    _t0 = time.monotonic()
+    event_id = payload.get("id", "")
+    auth = payload.get("payload", {}).get("authorization", {}).get("entity", {})
+    failure = payload.get("payload", {}).get("failure", {}) or {}
+    error = failure.get("entity", {}) if isinstance(failure, dict) else {}
+
+    subscription_id = auth.get("subscription_id", "")
+    mandate_id = auth.get("id", "") or error.get("id", "")
+    amount = error.get("amount", 0) or auth.get("amount", 0) or 0
+    failure_reason = error.get("failure_reason", "") or "mandate auth failed"
+    failure_code = error.get("failure_code", "") or "mandate_declined"
+
+    email = error.get("email", "") or auth.get("email", "")
+    phone = error.get("contact", "") or auth.get("contact", "")
+    customer_external_id = error.get("customer_id", "") or auth.get("customer_id", "")
+
+    # --- Idempotency ---
+    unique_id = error.get("razorpay_event_id") or event_id
+    if is_duplicate_webhook(db, event_id):
+        return {"status": "skipped", "reason": "duplicate_webhook"}
+
+    # --- Root-cause diagnosis ---
+    from app.services.agent_steps import AgentStage, emit_case_step
+    from app.services.root_cause import classify_root_cause
+
+    diagnosis = classify_root_cause(
+        failure_code=failure_code,
+        failure_reason=failure_reason,
+        event_type="subscription.auth.failed",
+        trigger_type="mandate_drop",
+        extra={"mandate_id": mandate_id, "subscription_id": subscription_id},
+    )
+
+    # --- Create customer + revenue event + recovery case ---
+    customer_id = _get_or_create_customer_id(db, customer_external_id, email, phone)
+    revenue_event = create_revenue_event(
+        db,
+        data=RevenueEventCreate(
+            customer_id=customer_id,
+            external_event_id=unique_id or f"mandate_{mandate_id}",
+            event_type="mandate_drop",
+            amount=amount,
+            currency="INR",
+            status="failed",
+            source="razorpay",
+            extra_data={
+                "mandate_id": mandate_id,
+                "subscription_id": subscription_id,
+                "failure_reason": failure_reason,
+                "failure_code": failure_code,
+                "trigger": "subscription.auth.failed",
+            },
+        ),
+    )
+
+    from app.crud.recovery_case import create_recovery_case
+    from app.services.revenue_risk import assess_risk
+
+    assessment = assess_risk(
+        db=db,
+        customer_id=str(customer_id),
+        revenue_event_id=str(revenue_event.id),
+        event_type="failed_subscription",
+        amount=amount,
+        extra_data={
+            "subscription_status": "active",
+            "failure_reason": failure_reason,
+            "failure_code": failure_code,
+        },
+    )
+
+    from app.services.recovery_settings import get_or_create
+
+    merchant_settings = get_or_create(db)
+    max_attempts = merchant_settings.max_recovery_attempts
+
+    recovery_case = create_recovery_case(
+        db,
+        data=RecoveryCaseCreate(
+            customer_id=customer_id,
+            revenue_event_id=revenue_event.id,
+            risk_level=assessment.risk_level,
+            risk_reason=assessment.risk_reason,
+            original_amount=amount,
+            remaining_amount=amount,
+            max_attempts=max_attempts,
+        ),
+    )
+    recovery_case.status = RecoveryStatus.AT_RISK
+    extra = dict(recovery_case.extra_data or {})
+    extra["trigger"] = "mandate_drop"
+    extra["root_cause"] = diagnosis.root_cause
+    extra["mandate_id"] = mandate_id
+    extra["subscription_id"] = subscription_id
+    recovery_case.extra_data = extra
+    db.commit()
+
+    store_webhook_event(db, event_id, "subscription.auth.failed", mandate_id or event_id)
+
+    # --- Audit + streamed reasoning chain ---
+    create_audit_event(
+        db,
+        data=AuditEventCreate(
+            recovery_case_id=recovery_case.id,
+            entity_type="recovery_case",
+            entity_id=recovery_case.id,
+            action="created",
+            new_value={
+                "status": "AT_RISK",
+                "original_amount": amount,
+                "trigger": "mandate_drop",
+                "failure_reason": failure_reason,
+            },
+            extra_data={"webhook_event_id": event_id, "mandate_id": mandate_id},
+        ),
+    )
+
+    emit_case_step(
+        db,
+        case_id=str(recovery_case.id),
+        stage=AgentStage.TRIGGER,
+        label="Trigger Received",
+        detail=f"subscription.auth.failed · mandate {mandate_id or '—'} dropped",
+        confidence=1.0,
+        latency_ms=int((time.monotonic() - _t0) * 1000),
+        extra={"mandate_id": mandate_id, "subscription_id": subscription_id},
+    )
+    emit_case_step(
+        db,
+        case_id=str(recovery_case.id),
+        stage=AgentStage.DIAGNOSIS,
+        label=f"Root Cause: {diagnosis.label}",
+        detail=diagnosis.explanation,
+        confidence=diagnosis.confidence,
+        extra=diagnosis.to_dict(),
+    )
+    emit_case_step(
+        db,
+        case_id=str(recovery_case.id),
+        stage=AgentStage.POLICY,
+        label="Policy Check: Mandate Re-setup",
+        detail=(
+            f"intervention={diagnosis.recommended_intervention} · "
+            f"risk={assessment.risk_level} · max_attempts={max_attempts}"
+        ),
+        confidence=diagnosis.confidence,
+        extra={"recommended_intervention": diagnosis.recommended_intervention},
+    )
+
+    from app.services.orchestrator import initiate_recovery
+
+    recovery_result = initiate_recovery(db, recovery_case.id)
+
+    emit_case_step(
+        db,
+        case_id=str(recovery_case.id),
+        stage=AgentStage.ACTION,
+        label="Mandate Re-setup Flow Initiated",
+        detail=f"intervention={diagnosis.recommended_intervention} · status={recovery_result.get('status')}",
+        extra={"recovery_status": recovery_result.get("status")},
+    )
+
+    logger.info(
+        "Mandate drop ingested: case=%s mandate=%s amount=%d",
+        recovery_case.id,
+        mandate_id,
+        amount,
+    )
+
+    return {
+        "status": "processed",
+        "case_id": str(recovery_case.id),
+        "mandate_id": mandate_id,
+        "recovery_initiated": recovery_result.get("status") == "initiated",
+        "diagnosis": diagnosis.to_dict(),
+    }
+
+
+def process_order_paid(db: Session, payload: dict) -> dict:
+    """Correlate an order transition to the paid state (no money recorded).
+
+    Razorpay fires ``order.paid`` when an order transitions to the paid state.
+    Actual money is never recorded here — that is the exclusive job of the
+    ``payment.captured`` webhook (which creates the verified Payment row). This
+    handler only correlates the order to a payment plan installment and pushes a
+    typed ``order_paid`` event so the ops console reflects the order lifecycle.
+
+    Idempotent: duplicates are skipped via the stored webhook event id.
+    """
+    event_id = payload.get("id", "")
+    order = payload.get("payload", {}).get("order", {}).get("entity", {})
+    order_id = order.get("id", "")
+
+    if is_duplicate_webhook(db, event_id):
+        return {"status": "skipped", "reason": "duplicate_webhook"}
+
+    store_webhook_event(db, event_id, "order.paid", order_id or event_id)
+
+    if not order_id:
+        return {"status": "processed", "case_id": None, "order_id": None}
+
+    installment = _find_installment_for_payment(db, "", order_id)
+    if not installment:
+        return {"status": "processed", "case_id": None, "order_id": order_id}
+
+    from app.services.realtime import publish_case_event
+
+    publish_case_event(
+        event_type="order_paid",
+        case_id=str(installment.recovery_case_id) if installment.recovery_case_id else "",
+        data={"order_id": order_id, "installment_id": str(installment.id)},
+    )
+
+    logger.info("order.paid correlated to installment %s", installment.id)
+    return {
+        "status": "processed",
+        "case_id": str(installment.recovery_case_id) if installment.recovery_case_id else None,
+        "order_id": order_id,
     }
 
 
@@ -550,3 +943,150 @@ def _record_verified_payment(
         amount,
     )
     return payment
+
+
+def _fulfill_active_promises(db: Session, recovery_case_id) -> list[str]:
+    """Mark any ACTIVE promise for a case as FULFILLED.
+
+    Called when a verified capture settles the case — the customer's promise
+    ("I'll pay by X") is now redeemed, so the promise moves to FULFILLED instead
+    of being allowed to expire/miss.
+
+    Returns:
+        List of promise ids that were fulfilled.
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from app.models.promise import Promise, PromiseStatus
+
+    promises = list(
+        db.execute(
+            select(Promise).where(
+                Promise.recovery_case_id == recovery_case_id,
+                Promise.status == PromiseStatus.ACTIVE.value,
+            )
+        ).scalars().all()
+    )
+    now = datetime.now(timezone.utc)
+    for promise in promises:
+        promise.status = PromiseStatus.FULFILLED.value
+        promise.fulfilled_at = now
+        promise.fulfilled_amount = promise.amount_promised
+    if promises:
+        db.commit()
+    return [str(p.id) for p in promises]
+
+
+def _emit_ledger_capture_step(
+    db: Session,
+    case,
+    payment_id: str,
+    amount: int,
+    method: str,
+) -> None:
+    """Stream the ledger-verification reasoning step for a verified capture.
+
+    A captured webhook is the ground-truth money event; this step documents in
+    the Agent Thought Stream that the recovered amount was *reconciled* (not
+    merely promised) and, when the case closes, that recovery completed.
+    """
+    from datetime import datetime, timezone
+
+    from app.services import agent_steps
+
+    fully = case.remaining_amount <= 0
+    agent_steps.emit_case_step(
+        db,
+        case_id=str(case.id),
+        stage=agent_steps.AgentStage.LEDGER,
+        label="Ledger Verified: Capture Reconciled",
+        detail=(
+            f"payment {payment_id} ({method or 'unknown'}) → ₹{(amount // 100)} "
+            f"credited · remaining ₹{(max(case.remaining_amount, 0) // 100)}"
+            + (" · case CLOSED" if fully else " · partial recovery")
+        ),
+        confidence=1.0,
+        extra={
+            "payment_id": payment_id,
+            "amount": amount,
+            "method": method,
+            "recovered_amount": case.recovered_amount,
+            "remaining_amount": case.remaining_amount,
+            "settled": fully,
+        },
+    )
+    if fully:
+        agent_steps.emit_case_step(
+            db,
+            case_id=str(case.id),
+            stage=agent_steps.AgentStage.LEDGER,
+            label="Recovery Completed",
+            detail=f"{case.original_amount // 100} INR captured — case closed",
+            confidence=1.0,
+            extra={"closed_at": datetime.now(timezone.utc).isoformat()},
+        )
+
+
+def _send_settlement_confirmation(
+    db: Session,
+    case,
+    amount_paise: int,
+) -> None:
+    """Persist + broadcast the loop-termination reconciliation message.
+
+    Emitted once a verified Razorpay capture settles a recovery case in full.
+    The message is rendered from the agent engine's ``recovered`` template
+    ("Thank you! Your payment of ₹X has been successfully reconciled."), written
+    to the case's WhatsApp thread (so it survives a reload) and pushed over the
+    case WebSocket so the ops console shows it live without a refresh.
+
+    Idempotent in practice: the payment.captured webhook is de-duplicated
+    upstream, so this runs exactly once per settlement.
+    """
+    from app.services import agent_engine, agent_flow
+
+    customer = None
+    if case.customer_id:
+        from app.models.customer import Customer
+
+        customer = db.get(Customer, case.customer_id)
+
+    customer_name = customer.name if customer else None
+    payload = agent_engine.build_reply(
+        case_id=str(case.id),
+        customer_name=customer_name,
+        amount_paise=amount_paise,
+        intent="ALREADY_PAID",
+        invoice_id=agent_engine.invoice_id_for_case(str(case.id)),
+        recovered=True,
+    )
+    agent_flow.persist_agent_reply(db, case, payload["text"], payload)
+    logger.info(
+        "Settlement confirmation sent for recovered case %s (amount=%d)",
+        case.id,
+        amount_paise,
+    )
+
+
+def _auto_send_failed_payment_email(db: Session, case, amount_paise: int) -> None:
+    """Send the automatic payment-failed notification email for a case.
+
+    Runs once when a failed payment creates a recovery case. Uses the
+    transactional email service (opt-out / duplicate / hard-stop compliant)
+    and is a no-op when the customer has no email address or the send is
+    blocked (already sent, opted out, etc.).
+    """
+    from app.services.email import EmailType, send_recovery_email
+    from app.services.agent_engine import payment_url_for_case
+
+    try:
+        send_recovery_email(
+            db=db,
+            case_id=case.id,
+            email_type=EmailType.FAILED_PAYMENT.value,
+            payment_link=payment_url_for_case(str(case.id)),
+        )
+    except Exception:
+        logger.exception("Failed to auto-send payment-failed email for case %s", case.id)

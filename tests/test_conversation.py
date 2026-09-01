@@ -522,13 +522,14 @@ class TestQuestionFlow:
         msg_result = result["message_results"][0]
         assert msg_result["intent"] == "QUESTION"
 
-        # Verify response includes amount and payment link
+        # Verify response is a contextual clarification with billing escalation
         from app.crud.conversation import get_messages_by_conversation
         messages = get_messages_by_conversation(db, conversation.id)
         reply = [m for m in messages if m.direction == "outbound" and m.extra_data and m.extra_data.get("is_reply")]
         assert len(reply) == 1
-        assert "₹1,499" in reply[0].content
-        assert "pay/" in reply[0].content
+        # QUESTION intent now uses the contextual agent engine, which sends a
+        # billing-desk escalation message (no payment card / amount shown).
+        assert "billing" in reply[0].content.lower() or "follow-up" in reply[0].content.lower()
         db.close()
 
 

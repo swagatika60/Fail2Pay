@@ -216,8 +216,10 @@ class TestAllEventTypes:
 
     def test_all_23_types_have_descriptions(self):
         from app.services.audit_logger import AuditEventType, EVENT_DESCRIPTIONS
-        types = [x for x in dir(AuditEventType) if not x.startswith("_")]
-        assert len(types) == 23
+        types = sorted(x for x in dir(AuditEventType) if not x.startswith("_"))
+        # Every defined event type must have a user-facing description.
+        # (31 types today; keep the actual count in sync with the enum.)
+        assert len(types) == 31
         for t in types:
             assert getattr(AuditEventType, t) in EVENT_DESCRIPTIONS
 

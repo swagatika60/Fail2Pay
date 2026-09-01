@@ -12,6 +12,56 @@ export function formatINRFull(paise: number): string {
   })}`
 }
 
+const CURRENCY_SYMBOL: Record<string, string> = {
+  INR: "₹",
+  USD: "$",
+  EUR: "€",
+  GBP: "£",
+}
+
+export function formatMoney(
+  paise: number,
+  currency = "INR",
+): string {
+  const symbol = CURRENCY_SYMBOL[currency] ?? ""
+  const formatted =
+    currency === "INR"
+      ? compactFormatINR(paise)
+      : compactToFixed(Number(paise) / 100)
+  return symbol ? `${symbol}${formatted}` : formatted
+}
+
+function compactToFixed(amount: number): string {
+  const abs = Math.abs(amount)
+  if (abs >= 1e9) return `${(amount / 1e9).toFixed(1)}B`
+  if (abs >= 1e6) return `${(amount / 1e6).toFixed(1)}M`
+  if (abs >= 1e3) return `${(amount / 1e3).toFixed(1)}K`
+  return `${Math.round(amount).toLocaleString("en-US")}`
+}
+
+function compactFormatINR(paise: number): string {
+  const rupees = Number(paise) / 100
+  if (rupees >= 10000000) return `${(rupees / 10000000).toFixed(2)} Cr`
+  if (rupees >= 100000) return `${(rupees / 100000).toFixed(2)} L`
+  if (rupees >= 1000) return `${(rupees / 1000).toFixed(1)} K`
+  return `${Math.round(rupees).toLocaleString("en-IN")}`
+}
+
+export function formatFullMoney(
+  paise: number,
+  currency = "INR",
+): string {
+  const symbol = CURRENCY_SYMBOL[currency] ?? ""
+  if (currency === "INR") {
+    return `${symbol}${(Number(paise) / 100).toLocaleString("en-IN", {
+      maximumFractionDigits: 2,
+    })}`
+  }
+  return `${symbol}${(Number(paise) / 100).toLocaleString("en-US", {
+    maximumFractionDigits: 2,
+  })}`
+}
+
 export function formatPercent(ratio: number, digits = 1): string {
   const value = Number(ratio)
   if (Number.isNaN(value)) return "—"

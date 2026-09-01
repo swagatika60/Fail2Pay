@@ -20,7 +20,7 @@ const TYPE_LABELS: Record<string, string> = {
   payment_retry: "🔄 Payment Retry",
   invoice: "📄 Invoice",
   payment_plan_confirmation: "📋 Plan Confirmation",
-  promise_to_pay_reminder: "⏰ Promise Reminder",
+  promise_to_pay_reminder: "Promise Reminder",
   payment_success: "✅ Payment Success",
 }
 

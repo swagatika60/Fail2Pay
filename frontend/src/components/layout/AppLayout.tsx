@@ -95,6 +95,20 @@ const NAV_ITEMS: NavItem[] = [
     prefetch: () => import("../../pages/AnalyticsPage"),
   },
   {
+    to: "/checkout-abandonments",
+    label: "Checkout Drop-off",
+    match: (p) => p.startsWith("/checkout-abandonments"),
+    icon: <Icon d="M3 3h18v18H3zM9 3v18M15 3v18M3 9h18M3 15h18" />,
+    prefetch: () => import("../../pages/CheckoutAbandonmentsPage"),
+  },
+  {
+    to: "/subscription-failures",
+    label: "Sub Failures",
+    match: (p) => p.startsWith("/subscription-failures"),
+    icon: <Icon d="M4 4h16v16H4zM8 2v4M16 2v4M8 18v4M16 18v4M2 8h4M18 8h4M2 16h4M18 16h4" />,
+    prefetch: () => import("../../pages/SubscriptionFailuresPage"),
+  },
+  {
     to: "/settings",
     label: "Settings",
     match: (p) => p.startsWith("/settings"),
@@ -107,17 +121,21 @@ const NAV_ITEMS: NavItem[] = [
 
 function Brand() {
   return (
-    <Link to="/" className="flex items-center gap-3 px-1">
-      <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-600 text-base font-black text-white">
-        F
-      </span>
-      <span>
-        <span className="block text-sm font-bold tracking-tight text-slate-100">
+    <Link to="/" className="flex flex-col gap-1 px-1">
+      <div className="flex items-center gap-2.5">
+        <span className="rounded-md border border-royal/20 bg-royal-soft px-2.5 py-1 font-mono text-sm text-royal">
+          F
+        </span>
+        <span className="text-sm font-semibold tracking-tight text-white">
           Fail2Pay
         </span>
-        <span className="block text-[11px] text-slate-500">
-          Revenue Recovery
-        </span>
+      </div>
+      <span className="text-[10px] font-medium text-slate-500">
+        Revenue Recovery Engine
+      </span>
+      <span className="inline-flex w-fit items-center gap-1 rounded-full border border-amber-500/25 bg-amber-500/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-amber-400">
+        <span className="h-1 w-1 animate-pulse rounded-full bg-amber-400" />
+        Demo Sandbox
       </span>
     </Link>
   )
@@ -151,6 +169,9 @@ export default function AppLayout({ children }: { children: ReactNode }) {
 
   const nav = (
     <nav className="flex flex-col gap-0.5">
+      <p className="px-3 pb-1 pt-4 text-[10px] font-semibold uppercase tracking-wider text-slate-600">
+        Overview
+      </p>
       {NAV_ITEMS.map((item) => {
         const active = item.match(location.pathname)
         const onPrefetch = () => {
@@ -165,20 +186,19 @@ export default function AppLayout({ children }: { children: ReactNode }) {
             to={item.to}
             onMouseEnter={onPrefetch}
             onFocus={onPrefetch}
-            className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+            className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-xs font-medium transition-colors ${
               active
-                ? "bg-blue-600/15 text-blue-400"
-                : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200"
+                ? "border border-royal/20 bg-royal-soft text-royal"
+                : "text-slate-400 hover:bg-panel-2 hover:text-slate-200"
             }`}
           >
             <span
-              className={`${active ? "text-blue-400" : "text-slate-500"}`}
+              className={`${active ? "text-indigo-400" : "text-slate-500"}`}
             >
               {item.icon}
             </span>
-            {item.label}
-            {active && (
-              <span className="ml-auto h-1.5 w-1.5 rounded-full bg-blue-400" />
+            {item.label}              {active && (
+              <span className="ml-auto h-1.5 w-1.5 rounded-full bg-royal" />
             )}
           </Link>
         )
@@ -187,57 +207,59 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   )
 
   const sidebarFooter = (
-    <div className="border-t border-slate-800 px-3 pt-4">
-      <div className="flex items-center gap-2 rounded-lg bg-slate-900 px-3 py-2">
-        <span className={`h-2 w-2 shrink-0 rounded-full ${meta.dot}`} />
-        <span className="truncate text-xs font-medium text-slate-400">
-          {meta.label}
+    <div className="border-t border-edge px-3 pt-4">
+      <div className="flex items-center justify-between rounded-lg border border-edge bg-panel-2 p-2.5 text-xs text-slate-400">
+        <span className="flex items-center gap-2">
+          <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+          Engine Online · v1.2
         </span>
+        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${meta.dot}`} title={meta.label} />
       </div>
-      <Link
-        to="/simulation"
-        className="mt-2 flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-slate-500 transition-colors hover:bg-slate-800/60 hover:text-slate-300"
-      >
-        <Icon d="M12 9v2m0 4h.01M12 6a7 7 0 100 14 7 7 0 000-14zM5.6 4.6 4.5 3.5M18.4 4.6l1.1-1.1" />
-        Developer tools
-      </Link>
     </div>
   )
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
+    <div className="flex min-h-screen bg-canvas text-slate-100">
       {/* Desktop sidebar */}
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-60 flex-col border-r border-slate-800 bg-slate-950 lg:flex">
-        <div className="border-b border-slate-800 px-4 py-5">
+      <aside className="sticky top-0 flex h-screen w-60 flex-col justify-between border-r border-edge bg-panel max-lg:hidden">
+        <div className="px-4 py-5">
           <Brand />
         </div>
-        <div className="flex-1 overflow-y-auto px-3 py-4">{nav}</div>
+        <div className="flex-1 overflow-y-auto px-3 pb-4">{nav}</div>
         {sidebarFooter}
       </aside>
 
-      {/* Mobile header */}
-      <header className="sticky top-0 z-30 flex items-center justify-between border-b border-slate-800 bg-slate-950/95 px-4 py-3 backdrop-blur lg:hidden">
-        <Brand />
-        <button
-          onClick={() => setDrawerOpen(!drawerOpen)}
-          aria-label="Toggle navigation"
-          className="rounded-lg p-2 text-slate-400 hover:bg-slate-800"
-        >
-          <svg
-            className="h-5 w-5"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth={1.8}
+      {/* Main column */}
+      <div className="flex min-h-screen min-w-0 flex-1 flex-col max-lg:w-full">
+        {/* Mobile header */}
+        <header className="sticky top-0 z-30 flex items-center justify-between border-b border-edge bg-slate-950/95 px-4 py-3 backdrop-blur lg:hidden">
+          <Brand />
+          <button
+            onClick={() => setDrawerOpen(!drawerOpen)}
+            aria-label="Toggle navigation"
+            className="rounded-lg p-2 text-slate-400 hover:bg-slate-800"
           >
-            {drawerOpen ? (
-              <path strokeLinecap="round" d="M6 6l12 12M6 18L18 6" />
-            ) : (
-              <path strokeLinecap="round" d="M4 7h16M4 12h16M4 17h16" />
-            )}
-          </svg>
-        </button>
-      </header>
+            <svg
+              className="h-5 w-5"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={1.8}
+            >
+              {drawerOpen ? (
+                <path strokeLinecap="round" d="M6 6l12 12M6 18L18 6" />
+              ) : (
+                <path strokeLinecap="round" d="M4 7h16M4 12h16M4 17h16" />
+              )}
+            </svg>
+          </button>
+        </header>
+
+        {/* Content */}
+        <div className="flex-1 p-6 md:p-8">
+          <main className="mx-auto max-w-7xl">{children}</main>
+        </div>
+      </div>
 
       {/* Mobile drawer */}
       {drawerOpen && (
@@ -246,20 +268,15 @@ export default function AppLayout({ children }: { children: ReactNode }) {
             className="absolute inset-0 bg-black/60"
             onClick={() => setDrawerOpen(false)}
           />
-          <div className="absolute inset-y-0 left-0 flex w-64 flex-col bg-slate-950 shadow-2xl">
-            <div className="border-b border-slate-800 px-4 py-5">
+          <div className="absolute inset-y-0 left-0 flex w-64 flex-col bg-panel shadow-2xl">
+            <div className="px-4 py-5">
               <Brand />
             </div>
-            <div className="flex-1 overflow-y-auto px-3 py-4">{nav}</div>
+            <div className="flex-1 overflow-y-auto px-3 pb-4">{nav}</div>
             {sidebarFooter}
           </div>
         </div>
       )}
-
-      {/* Content */}
-      <div className="px-4 py-6 sm:px-6 lg:ml-60 lg:px-8">
-        <main className="mx-auto max-w-7xl">{children}</main>
-      </div>
     </div>
   )
 }

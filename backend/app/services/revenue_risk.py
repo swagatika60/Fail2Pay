@@ -75,6 +75,8 @@ def assess_risk(
         return _assess_overdue_invoice(db, customer_id, amount, extra_data)
     elif event_type == "failed_subscription":
         return _assess_failed_subscription(db, customer_id, amount, extra_data)
+    elif event_type == "checkout_abandonment":
+        return _assess_checkout_abandonment(db, customer_id, amount, extra_data)
     else:
         # Unknown event type — default to medium risk
         return RiskAssessment(
@@ -323,6 +325,41 @@ def _assess_overdue_invoice(
             "amount": amount,
             "overdue_days": overdue_days,
             "due_date": due_date_str,
+        },
+    )
+
+
+def _assess_checkout_abandonment(
+    db: Session, customer_id: str, amount: int, extra_data: dict
+) -> RiskAssessment:
+    """Analyze an abandoned checkout.
+
+    Rules:
+    - HIGH risk if amount >= ₹1,00,000 OR customer abandoned repeatedly
+    - MEDIUM risk if amount >= ₹10,000
+    - LOW risk otherwise
+    - Always recoverable (checkout can be re-attempted)
+    """
+    abandonment_count = extra_data.get("abandonment_count", 1)
+
+    if amount >= HIGH_AMOUNT_THRESHOLD:
+        risk_level = "HIGH"
+        risk_reason = "High-value cart abandoned during checkout (>= ₹1,00,000)"
+    elif amount >= MEDIUM_AMOUNT_THRESHOLD:
+        risk_level = "MEDIUM"
+        risk_reason = "Medium-value cart abandoned during checkout (>= ₹10,000)"
+    else:
+        risk_level = "LOW"
+        risk_reason = "Cart abandoned during checkout — low-value transaction"
+
+    return RiskAssessment(
+        risk_level=risk_level,
+        risk_reason=risk_reason,
+        is_recoverable=True,
+        risk_category="CHECKOUT_ABANDONMENT",
+        factors={
+            "amount": amount,
+            "abandonment_count": abandonment_count,
         },
     )
 

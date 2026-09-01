@@ -25,3 +25,6 @@ class Customer(Base):
     recovery_cases = relationship("RecoveryCase", back_populates="customer")
     invoices = relationship("Invoice", back_populates="customer")
     promises = relationship("Promise", back_populates="customer")
+    receivable_invoices = relationship("ReceivableInvoice", back_populates="customer")
+    checkout_abandonments = relationship("CheckoutAbandonment", back_populates="customer")
+    subscription_failures = relationship("SubscriptionFailure", back_populates="customer")

@@ -85,11 +85,16 @@ export interface SimulateMessageResult {
 export async function simulateCustomerMessage(
   caseId: string,
   trigger: string,
+  message?: string,
+  options?: { promiseDate?: string },
 ): Promise<SimulateMessageResult> {
+  const body: Record<string, string> = { trigger }
+  if (message) body.message = message
+  if (options?.promiseDate) body.promise_date = options.promiseDate
   const response = await fetch(`/api/cases/${caseId}/simulate-message`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ trigger }),
+    body: JSON.stringify(body),
   })
   if (!response.ok) throw new Error("Failed to simulate customer message")
   return response.json() as Promise<SimulateMessageResult>
@@ -145,5 +150,74 @@ export interface RetrySequencer {
 export function fetchPlanRetrySequencer(planId: string): Promise<RetrySequencer> {
   return cached(`plan-seq:${planId}`, () =>
     getJSON<RetrySequencer>(`/api/plans/${planId}/retry-sequencer`),
+  )
+}
+
+export interface RazorpayOrder {
+  order_id: string
+  amount: number
+  currency: string
+  receipt: string
+  status: string
+}
+
+/**
+ * Create a Razorpay order for a test-mode checkout. Throws when Razorpay is
+ * not configured (no keys), so the UI can gracefully fall back to the demo
+ * simulation path instead of showing a broken gateway.
+ */
+export async function createRazorpayOrder(
+  amount: number,
+  receipt: string,
+): Promise<RazorpayOrder> {
+  const response = await fetch("/api/payments/orders", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ amount, currency: "INR", receipt }),
+  })
+  if (!response.ok) throw new Error("Razorpay is not configured")
+  return response.json() as Promise<RazorpayOrder>
+}
+
+// --- Checkout Abandonments ---
+
+import type {
+  CheckoutAbandonmentItem,
+  CheckoutSummary,
+  SubscriptionFailureItem,
+  SubscriptionSummary,
+} from "../types/operations"
+
+export function fetchCheckoutAbandonments(opts: { bypass?: boolean } = {}): Promise<CheckoutAbandonmentItem[]> {
+  return cached(
+    "checkout-abandonments",
+    () => getJSON<CheckoutAbandonmentItem[]>("/api/checkout-abandonments"),
+    opts.bypass,
+  )
+}
+
+export function fetchCheckoutSummary(opts: { bypass?: boolean } = {}): Promise<CheckoutSummary> {
+  return cached(
+    "checkout-summary",
+    () => getJSON<CheckoutSummary>("/api/checkout-abandonments/summary"),
+    opts.bypass,
+  )
+}
+
+// --- Subscription Failures ---
+
+export function fetchSubscriptionFailures(opts: { bypass?: boolean } = {}): Promise<SubscriptionFailureItem[]> {
+  return cached(
+    "subscription-failures",
+    () => getJSON<SubscriptionFailureItem[]>("/api/subscription-failures"),
+    opts.bypass,
+  )
+}
+
+export function fetchSubscriptionSummary(opts: { bypass?: boolean } = {}): Promise<SubscriptionSummary> {
+  return cached(
+    "subscription-summary",
+    () => getJSON<SubscriptionSummary>("/api/subscription-failures/summary"),
+    opts.bypass,
   )
 }

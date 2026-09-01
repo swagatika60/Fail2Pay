@@ -146,8 +146,9 @@ class TestRecoveryCase:
         # make sure all status values are valid
         for status in RecoveryStatus:
             assert status.value in [
-                "AT_RISK", "RECOVERY_IN_PROGRESS", "PROMISED", "SCHEDULED",
-                "PARTIALLY_RECOVERED", "RECOVERED", "LOST", "STOPPED"
+                "AT_RISK", "RECOVERY_IN_PROGRESS", "ENGAGED", "PROMISED",
+                "PAYMENT_PLAN",
+                "SCHEDULED", "PARTIALLY_RECOVERED", "RECOVERED", "LOST", "STOPPED",
             ]
 
 

@@ -384,7 +384,10 @@ def _apply_scenario(
     from app.models.installment import Installment
     from app.models.payment import Payment
     from app.models.payment_plan import PaymentPlan
+    from app.models.promise import Promise
+    from app.models.recovery_attempt import RecoveryAttempt
     from app.models.recovery_case import RecoveryStatus
+    from app.models.scheduled_action import ScheduledAction
 
     role = customer.name.split()[0]
     now = datetime.now(timezone.utc)
@@ -536,9 +539,62 @@ def _apply_scenario(
         items.append(conv(
             ("outbound", f"Hi {role}, your payment needs attention."),
             ("inbound", "Kal payment kar dunga"),
+            ("outbound", f"Got it {role} — noted for tomorrow. Koi problem ho to message karein! 🙌"),
         ))
-        # IMPORTANT: a promise is NOT a payment. No Payment row is created
-        # and the case stays PROMISED (money still at risk).
+        # A promise alone is NEVER a payment and never counts as recovered
+        # revenue. But to keep the demo dataset internally coherent with the
+        # real event-driven pipeline, we create the SAME domain records the
+        # webhook would: an ACTIVE Promise, a logged recovery attempt
+        # (result=promised), and a queued promise-reminder touchpoint so the
+        # Promise panel, Next Touchpoint and Pipeline Queue all render real,
+        # consistent state instead of an empty Queue behind a PROMISED case.
+        promised_date = case_created + timedelta(days=1)
+        promise = Promise(
+            id=uuid.uuid4(),
+            recovery_case_id=case_id,
+            customer_id=customer.id,
+            amount_promised=amount,
+            currency="INR",
+            promised_date=promised_date,
+            promise_window_hours=72,
+            expires_at=promised_date + timedelta(hours=72),
+            customer_message="Kal payment kar dunga",
+            status="ACTIVE",
+            extra_data={"simulation": True, "scenario": scenario},
+        )
+        items.append(promise)
+
+        items.append(
+            RecoveryAttempt(
+                id=uuid.uuid4(),
+                recovery_case_id=case_id,
+                attempt_number=2,
+                channel="whatsapp",
+                status="sent",
+                result="promised",
+                extra_data={
+                    "simulation": True,
+                    "scenario": scenario,
+                    "promise_id": str(promise.id),
+                },
+            )
+        )
+
+        # Queued promise reminder — fires before the promised date, exactly as
+        # the real scheduler would queue one.
+        items.append(
+            ScheduledAction(
+                id=uuid.uuid4(),
+                recovery_case_id=case_id,
+                action_type="promise_reminder",
+                attempt_number=1,
+                channel="whatsapp",
+                scheduled_for=promised_date - timedelta(hours=2),
+                scheduled_at=case_created,
+                status="pending",
+                extra_data={"simulation": True, "reason": "promise_to_pay"},
+            )
+        )
         outcome.update(final_status="PROMISED", recovered=False)
 
     elif scenario == "payment_plan_request":

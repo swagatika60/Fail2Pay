@@ -53,12 +53,13 @@ class TestCustomerIntent:
         assert VALID_INTENTS == {intent.value for intent in CustomerIntent}
 
     def test_intent_count(self):
-        """There are exactly 10 allowed intents."""
-        assert len(CustomerIntent) == 10
+        """There are exactly 16 allowed intents (11 legacy + 5 Recovery Specialist)."""
+        assert len(CustomerIntent) == 16
 
     def test_required_intents_present(self):
         """All required intents are defined."""
         required = [
+            # Legacy intents
             "PAYMENT_RETRY_REQUEST",
             "PAYMENT_LINK_REQUEST",
             "INVOICE_REQUEST",
@@ -69,6 +70,12 @@ class TestCustomerIntent:
             "NEGATIVE",
             "STOP_REQUEST",
             "UNCLEAR",
+            # Recovery Specialist intents
+            "PAY_NOW",
+            "SPLIT_EMI",
+            "PAY_LATER",
+            "GREETING",
+            "FALLBACK",
         ]
         for intent in required:
             assert intent in VALID_INTENTS, f"Missing required intent: {intent}"

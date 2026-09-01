@@ -21,6 +21,7 @@ import json
 import logging
 import re
 import time
+from functools import lru_cache
 from typing import Protocol
 
 import httpx
@@ -56,7 +57,7 @@ class OpenAIProvider:
         self.model = model
         self.base_url = base_url
 
-    def classify(self, system_prompt: str, user_message: str, timeout: float = 10.0) -> str:
+    def classify(self, system_prompt: str, user_message: str, timeout: float = 5.0) -> str:
         """Send classification request to OpenAI-compatible API."""
         url = f"{self.base_url}/chat/completions"
         headers = {
@@ -99,41 +100,37 @@ class MockAIProvider:
 
 # --- System Prompt ---
 
-INTENT_CLASSIFICATION_PROMPT = """You are a customer intent classifier for a payment recovery system.
+INTENT_CLASSIFICATION_PROMPT = """Classify the customer message into ONE intent. Return ONLY JSON: {"intent": "INTENT", "confidence": 0.0-1.0}
 
-Your ONLY job is to classify the customer's message into one of these intents:
-- PAYMENT_RETRY_REQUEST: Customer wants to retry/reattempt their failed payment
-- PAYMENT_LINK_REQUEST: Customer is asking for a payment link
-- INVOICE_REQUEST: Customer wants an invoice for the payment
-- PAYMENT_PLAN_REQUEST: Customer wants to set up installments/payment plan
-- PROMISE_TO_PAY: Customer is promising they will pay (with or without a date)
-- ALREADY_PAID: Customer claims they have already made the payment
-- QUESTION: Customer has a general question about the payment/billing
-- NEGATIVE: Customer is refusing to pay, angry, or expressing frustration
-- STOP_REQUEST: Customer wants to stop receiving messages
-- UNCLEAR: The message is unclear, in an unsupported language, or doesn't fit any category
-
-You MUST handle messages in ANY language — English, Hindi, Hinglish, Odia, or mixed.
-The intent taxonomy is the SAME regardless of language.
-
-Examples across languages:
-- "Kal payment kar dunga" → PROMISE_TO_PAY
-- "Payment link bhejo" → PAYMENT_LINK_REQUEST
-- "Mu kali payment karibi" → PROMISE_TO_PAY
-- "Please stop messaging me" → STOP_REQUEST
-- "मैं पैसा दे दूंगा" → PROMISE_TO_PAY
-- "बिल भेजो" → INVOICE_REQUEST
-
-Respond with ONLY a JSON object:
-{"intent": "INTENT_NAME", "confidence": 0.0-1.0}
+Intents (pick the best match):
+- PAY_NOW: wants to pay immediately ("pay now", "abhi pay")
+- SPLIT_EMI: wants installments ("split", "EMI", "kist")
+- PAY_LATER: wants to delay ("later", "baad mein", "tomorrow")
+- PAYMENT_RETRY_REQUEST: wants to retry payment ("retry", "dobara pay")
+- PAYMENT_PLAN_REQUEST: wants payment plan setup
+- PROMISE_TO_PAY: promising to pay ("kal kar dunga", "will pay")
+- PAYMENT_LINK_REQUEST: wants payment link ("send link", "link bhejo")
+- INVOICE_REQUEST: wants invoice/bill ("send invoice", "bill bhejo")
+- ALREADY_PAID: claims already paid
+- QUESTION: general question about billing
+- NEGATIVE: refusing/frustrated ("not paying", "nahi karunga")
+- STOP_REQUEST: wants to stop messages
+- SUPPORT: wants human agent
+- GREETING: casual hello/thanks
+- FALLBACK: uninterpretable
+- UNCLEAR: ambiguous
 
 Rules:
-- Be conservative with confidence. Only assign high confidence (>0.8) when the intent is clear.
-- If the message is ambiguous, use UNCLEAR with low confidence.
-- Do NOT attempt to take any actions. You only classify.
-- Do NOT generate payment links, invoices, or any other resources.
-- Language does NOT change the intent — same rules apply to all languages.
-"""
+- Same rules for ALL languages (English, Hindi, Hinglish, Odia)
+- Be conservative: high confidence (>0.8) only when clear
+- You ONLY classify — never take actions or generate links
+
+Examples:
+"hyy" → GREETING 0.9 | "pay now" → PAY_NOW 0.95 | "2 installments mein" → SPLIT_EMI 0.9
+"Kal payment" → PROMISE_TO_PAY 0.85 | "link bhejo" → PAYMENT_LINK_REQUEST 0.9
+"stop messaging" → STOP_REQUEST 0.95 | "talk to support" → SUPPORT 0.95
+"baad mein" → PAY_LATER 0.85 | "pehle kar diya" → ALREADY_PAID 0.9
+"dobara pay" → PAYMENT_RETRY_REQUEST 0.9 | "why charged" → QUESTION 0.85"""
 
 
 # --- Deterministic Rule-Based Fallback ---
@@ -182,6 +179,11 @@ def _rule_based_classify(message: str, language: str = "en") -> IntentDetectionR
     if patterns.payment_plan and any(re.search(p, msg_lower) for p in patterns.payment_plan):
         return IntentDetectionResult(intent=CustomerIntent.PAYMENT_PLAN_REQUEST, confidence=0.80)
 
+    # Support handoff patterns (checked before question to avoid false positives)
+    _support_re = re.compile(r"\b(support|human|agent|representative|customer\s*service|speak\s*to|talk\s*to)\b", re.IGNORECASE)
+    if _support_re.search(msg_lower):
+        return IntentDetectionResult(intent=CustomerIntent.SUPPORT, confidence=0.85)
+
     # Question patterns
     if patterns.question and any(re.search(p, msg_lower) for p in patterns.question):
         return IntentDetectionResult(intent=CustomerIntent.QUESTION, confidence=0.65)
@@ -197,6 +199,7 @@ def _parse_ai_response(raw_response: str) -> IntentDetectionResult:
     """Parse and validate AI response into IntentDetectionResult.
 
     Validates that the intent is in the allowed set.
+    Supports both canonical intent names and Recovery Specialist aliases.
     If invalid, returns UNCLEAR.
     """
     try:
@@ -212,8 +215,12 @@ def _parse_ai_response(raw_response: str) -> IntentDetectionResult:
     intent_str = data.get("intent", "")
     confidence = float(data.get("confidence", 0.0))
 
+    # Resolve Recovery Specialist aliases to canonical intent names
+    from app.schemas.intent import RECOVERY_INTENT_ALIASES
+    resolved_intent = RECOVERY_INTENT_ALIASES.get(intent_str, intent_str)
+
     # Validate intent is in allowed set
-    if intent_str not in VALID_INTENTS:
+    if resolved_intent not in VALID_INTENTS:
         logger.warning("AI returned invalid intent: %s (not in allowed set)", intent_str)
         return IntentDetectionResult(
             intent=CustomerIntent.UNCLEAR,
@@ -225,7 +232,7 @@ def _parse_ai_response(raw_response: str) -> IntentDetectionResult:
     confidence = max(0.0, min(1.0, confidence))
 
     return IntentDetectionResult(
-        intent=CustomerIntent(intent_str),
+        intent=CustomerIntent(resolved_intent),
         confidence=confidence,
         raw_response=raw_response,
     )
@@ -333,8 +340,15 @@ def detect_intent(
             )
 
     # --- Step 3: Deterministic fallback (language-aware) ---
-    logger.info("Using rule-based fallback for intent detection (language=%s)", language)
-    fallback_result = _rule_based_classify(request.message, language)
+    # Use the language *detected from the message content* (script + keywords)
+    # rather than the caller's coarse language hint. WhatsApp reports text
+    # language as e.g. "hi" regardless of whether the customer wrote Devanagari
+    # or Romanized Hinglish; detection is what actually reads the script, so a
+    # Romanized "Kal payment kar dunga" maps to the hi-en patterns and classifies
+    # as a promise instead of falling through to UNCLEAR.
+    fallback_language = detected_language or language
+    logger.info("Using rule-based fallback for intent detection (language=%s)", fallback_language)
+    fallback_result = _rule_based_classify(request.message, fallback_language)
     elapsed_ms = (time.monotonic() - start_time) * 1000
 
     return IntentDetectionResponse(

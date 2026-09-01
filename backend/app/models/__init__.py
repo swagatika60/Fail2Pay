@@ -13,7 +13,11 @@ from app.models.scheduled_action import ScheduledAction
 from app.models.email import SentEmail
 from app.models.promise import Promise
 from app.models.payment import Payment
+from app.models.payment_link import PaymentLink
 from app.models.recovery_setting import RecoverySetting
+from app.models.receivable_invoice import ReceivableInvoice, ReceivableEscalationEvent
+from app.models.checkout import CheckoutAbandonment
+from app.models.subscription import SubscriptionFailure
 
 __all__ = [
     "Customer",
@@ -31,5 +35,10 @@ __all__ = [
     "SentEmail",
     "Promise",
     "Payment",
+    "PaymentLink",
     "RecoverySetting",
+    "ReceivableInvoice",
+    "ReceivableEscalationEvent",
+    "CheckoutAbandonment",
+    "SubscriptionFailure",
 ]

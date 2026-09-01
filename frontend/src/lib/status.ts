@@ -24,6 +24,18 @@ export const CASE_STATUS_META: Record<string, StatusMeta> = {
     dot: "bg-blue-400",
     text: "text-blue-400",
   },
+  ENGAGED: {
+    label: "Engaged",
+    badge: "bg-cyan-500/10 text-cyan-400 border-cyan-500/30",
+    dot: "bg-cyan-400",
+    text: "text-cyan-400",
+  },
+  PAYMENT_PLAN: {
+    label: "Payment Plan",
+    badge: "bg-indigo-500/10 text-indigo-400 border-indigo-500/30",
+    dot: "bg-indigo-400",
+    text: "text-indigo-400",
+  },
   SCHEDULED: {
     label: "Scheduled",
     badge: "bg-purple-500/10 text-purple-400 border-purple-500/30",

@@ -10,6 +10,7 @@ import type {
   HardStop,
   RecoveryTimeline,
   PolicyTrace,
+  CaseSchedule,
   VerifiedImpactLedger,
 } from "../types/analytics"
 
@@ -126,5 +127,24 @@ export async function fetchCasePolicyTrace(
 ): Promise<PolicyTrace> {
   const response = await fetch(`/api/cases/${caseId}/policy-trace`)
   if (!response.ok) throw new Error("Failed to fetch policy trace")
+  return response.json()
+}
+
+export async function fetchCaseSchedule(caseId: string): Promise<CaseSchedule> {
+  const response = await fetch(`/api/cases/${caseId}/schedule`)
+  if (!response.ok) throw new Error("Failed to fetch case schedule")
+  return response.json()
+}
+
+export async function runAutonomousScheduler(): Promise<{
+  total_due: number
+  executed: number
+  cancelled: number
+  skipped: number
+}> {
+  const response = await fetch("/api/autonomous/scheduler/run", {
+    method: "POST",
+  })
+  if (!response.ok) throw new Error("Failed to run autonomous scheduler")
   return response.json()
 }

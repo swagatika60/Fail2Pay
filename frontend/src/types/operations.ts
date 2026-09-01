@@ -88,3 +88,71 @@ export interface InvoiceListItem extends CaseCustomerContext {
   created_at: string | null
   secure_token: string
 }
+
+export interface CheckoutAbandonmentItem {
+  id: string
+  customer_id: string
+  customer_name: string | null
+  customer_email: string | null
+  customer_phone: string | null
+  cart_ref: string
+  amount: number
+  currency: string
+  item_count: number
+  source: string
+  abandonment_reason: string | null
+  cause: string
+  status: string
+  reengagement_count: number
+  reengagement_channel: string | null
+  abandoned_at: string | null
+  last_reengagement_at: string | null
+  created_at: string | null
+  recovery_case_id: string | null
+}
+
+export interface CheckoutSummary {
+  total: number
+  total_amount: number
+  recovered: number
+  abandoned: number
+  recovering: number
+  lost: number
+  recovery_rate: number
+}
+
+export interface SubscriptionFailureItem {
+  id: string
+  customer_id: string
+  customer_name: string | null
+  customer_email: string | null
+  customer_phone: string | null
+  subscription_id: string
+  plan_id: string | null
+  plan_name: string | null
+  billing_cycle: string | null
+  amount: number
+  currency: string
+  failure_code: string | null
+  failure_reason: string | null
+  cause: string
+  status: string
+  retry_count: number
+  max_retries: number
+  days_until_churn: number | null
+  failed_at: string | null
+  next_retry_at: string | null
+  last_retry_at: string | null
+  created_at: string | null
+  recovery_case_id: string | null
+}
+
+export interface SubscriptionSummary {
+  total: number
+  total_amount: number
+  failed: number
+  retrying: number
+  recovered: number
+  churned: number
+  retention_rate: number
+}

@@ -15,6 +15,8 @@ const RecoveryCasePage = lazy(() => import("./pages/RecoveryCasePage"))
 const SimulationPage = lazy(() => import("./pages/SimulationPage"))
 const RecoverySettingsPage = lazy(() => import("./pages/RecoverySettingsPage"))
 const PayNowPage = lazy(() => import("./pages/PayNowPage"))
+const CheckoutAbandonmentsPage = lazy(() => import("./pages/CheckoutAbandonmentsPage"))
+const SubscriptionFailuresPage = lazy(() => import("./pages/SubscriptionFailuresPage"))
 
 const PUBLIC_PREFIXES = ["/overview", "/pay"]
 
@@ -58,6 +60,8 @@ function AppRouter() {
           <Route path="/analytics" element={<AnalyticsPage />} />
           <Route path="/settings" element={<RecoverySettingsPage />} />
           <Route path="/case/:caseId" element={<RecoveryCasePage />} />
+          <Route path="/checkout-abandonments" element={<CheckoutAbandonmentsPage />} />
+          <Route path="/subscription-failures" element={<SubscriptionFailuresPage />} />
           <Route path="/simulation" element={<SimulationPage />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>

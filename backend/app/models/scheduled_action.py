@@ -26,6 +26,11 @@ class ScheduledAction(Base):
     attempt_number: Mapped[int] = mapped_column(Integer)  # which attempt in the sequence
     channel: Mapped[str] = mapped_column(String(50))  # "whatsapp", "email", "sms"
     scheduled_for: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    # The wall-clock time at which the reminder was actually queued for sending
+    # (distinct from scheduled_for which is the target delivery time).
+    scheduled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     status: Mapped[str] = mapped_column(
         String(50), default="pending", index=True
     )  # "pending", "executed", "cancelled", "skipped"

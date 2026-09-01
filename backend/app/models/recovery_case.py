@@ -12,7 +12,9 @@ from app.database import Base
 class RecoveryStatus(str, enum.Enum):
     AT_RISK = "AT_RISK"
     RECOVERY_IN_PROGRESS = "RECOVERY_IN_PROGRESS"
+    ENGAGED = "ENGAGED"
     PROMISED = "PROMISED"
+    PAYMENT_PLAN = "PAYMENT_PLAN"
     SCHEDULED = "SCHEDULED"
     PARTIALLY_RECOVERED = "PARTIALLY_RECOVERED"
     RECOVERED = "RECOVERED"
@@ -54,3 +56,6 @@ class RecoveryCase(Base):
     invoices = relationship("Invoice", back_populates="recovery_case")
     promises = relationship("Promise", back_populates="recovery_case")
     payments = relationship("Payment", back_populates="recovery_case")
+    payment_links = relationship("PaymentLink", back_populates="recovery_case")
+    checkout_abandonment = relationship("CheckoutAbandonment", back_populates="recovery_case")
+    subscription_failure = relationship("SubscriptionFailure", back_populates="recovery_case")

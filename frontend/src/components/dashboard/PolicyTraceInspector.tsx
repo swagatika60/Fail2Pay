@@ -84,11 +84,11 @@ export default function PolicyTraceInspector({ caseId, onClose }: Props) {
       onClick={onClose}
     >
       <div
-        className="my-8 w-full max-w-3xl rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl"
+        className="my-8 w-full max-w-3xl rounded-2xl border border-edge bg-panel shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-slate-800 p-5">
+        <div className="flex items-center justify-between border-b border-edge p-5">
           <div>
             <h2 className="flex items-center gap-2 text-lg font-bold text-slate-100">
               <Brain className="w-5 h-5 text-indigo-400" />
@@ -182,8 +182,8 @@ export default function PolicyTraceInspector({ caseId, onClose }: Props) {
                           }
                           className={`w-full rounded-lg border px-4 py-3 text-left transition-colors ${
                             selected?.id === node.id
-                              ? "border-slate-500 bg-slate-800"
-                              : "border-slate-800 bg-slate-800/40 hover:bg-slate-800/70"
+                              ? "border-edge-strong bg-panel-2"
+                              : "border-edge bg-panel-2 hover:bg-elevated"
                           }`}
                         >
                           <div className="flex flex-wrap items-center justify-between gap-2">

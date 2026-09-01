@@ -3,7 +3,7 @@ import uuid
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
-from app.models.email import SentEmail
+from app.models.email import SentEmail, EmailDeliveryStatus
 from app.schemas.email import SentEmailCreate
 
 
@@ -86,3 +86,29 @@ def count_emails_by_case_and_type(
         )
     )
     return result.scalar() or 0
+
+
+def cancel_pending_emails_for_case(db: Session, case_id: uuid.UUID) -> int:
+    """Cancel all queued (PENDING) emails for a recovery case.
+
+    Called when a recovery case settles or is stopped so no stale reminder /
+    retry email is dispatched after the outcome is already known. Returns the
+    number of emails that were cancelled.
+    """
+    from datetime import datetime, timezone
+
+    result = db.execute(
+        select(SentEmail.id).where(
+            SentEmail.recovery_case_id == case_id,
+            SentEmail.delivery_status == EmailDeliveryStatus.PENDING.value,
+        )
+    )
+    ids = list(result.scalars().all())
+    now = datetime.now(timezone.utc)
+    for email_id in ids:
+        email = db.get(SentEmail, email_id)
+        if email:
+            email.delivery_status = EmailDeliveryStatus.CANCELLED.value
+            email.updated_at = now
+    db.commit()
+    return len(ids)

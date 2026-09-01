@@ -66,6 +66,8 @@ def list_recovery_cases(db: Session = Depends(get_db)):
     customers = db.query(Customer).filter(Customer.id.in_(customer_ids)).all()
     customer_map = {c.id: c for c in customers}
 
+    from app.services.recovery_state import derive_stage
+
     return [
         RecoveryCaseSummary(
             id=case.id,
@@ -74,6 +76,7 @@ def list_recovery_cases(db: Session = Depends(get_db)):
             original_amount=case.original_amount,
             risk_level=case.risk_level,
             status=case.status.value if hasattr(case.status, "value") else case.status,
+            recovery_stage=derive_stage(db, case).stage,
             recovered_amount=case.recovered_amount,
             remaining_amount=case.remaining_amount,
             attempt_count=case.attempt_count,
@@ -119,8 +122,18 @@ def get_recovery_case_detail(case_id: UUID, db: Session = Depends(get_db)):
 
     # Extract failure reason from revenue event metadata
     failure_reason = None
+    root_cause = None
     if revenue_event and revenue_event.extra_data:
         failure_reason = revenue_event.extra_data.get("failure_reason")
+        root_cause = revenue_event.extra_data.get("root_cause")
+    if not root_cause and case.extra_data:
+        root_cause = case.extra_data.get("root_cause")
+
+    from app.services import agent_steps
+    from app.services.recovery_state import derive_stage
+
+    stage = derive_stage(db, case)
+    agent_steps_list = agent_steps.get_case_steps(db, case.id)
 
     return RecoveryCaseDetail(
         id=case.id,
@@ -132,6 +145,8 @@ def get_recovery_case_detail(case_id: UUID, db: Session = Depends(get_db)):
         risk_level=case.risk_level,
         risk_reason=case.risk_reason,
         status=case.status.value if hasattr(case.status, "value") else case.status,
+        recovery_stage=stage.stage,
+        recovery_stage_index=stage.index if stage.index >= 0 else None,
         original_amount=case.original_amount,
         recovered_amount=case.recovered_amount,
         remaining_amount=case.remaining_amount,
@@ -146,7 +161,9 @@ def get_recovery_case_detail(case_id: UUID, db: Session = Depends(get_db)):
         source=revenue_event.source if revenue_event else None,
         currency=revenue_event.currency if revenue_event else "INR",
         failure_reason=failure_reason,
+        root_cause=root_cause,
         audit_events=audit_events,
+        agent_steps=agent_steps_list,
     )
 
 
@@ -154,6 +171,7 @@ def _compute_summary(db: Session) -> RevenueSummary:
     """Compute revenue summary from database."""
     # Get all recovery cases grouped by status
     status_amounts: dict[str, int] = {}
+    status_counts: dict[str, int] = {}
     total_original = 0
     total_recovered = 0
 
@@ -163,6 +181,7 @@ def _compute_summary(db: Session) -> RevenueSummary:
         total_original += case.original_amount
         total_recovered += case.recovered_amount
         status_amounts[status] = status_amounts.get(status, 0) + case.original_amount
+        status_counts[status] = status_counts.get(status, 0) + 1
 
     at_risk = status_amounts.get("AT_RISK", 0)
     recovery_in_progress = status_amounts.get("RECOVERY_IN_PROGRESS", 0)
@@ -185,6 +204,24 @@ def _compute_summary(db: Session) -> RevenueSummary:
     at_risk_total = at_risk + partially_recovered  # at risk includes partially recovered
     recovery_rate = (total_recovered / at_risk_total) if at_risk_total > 0 else 0.0
 
+    # Self-cure baseline: cases recovered with zero outreach attempts
+    self_cure_count = 0
+    self_cure_amount = 0
+    for case in all_cases:
+        case_status = case.status.value if hasattr(case.status, "value") else case.status
+        if case_status == "RECOVERED" and case.recovered_amount > 0 and case.attempt_count == 0:
+            self_cure_count += 1
+            self_cure_amount += case.recovered_amount
+
+    total_recovered_count = status_counts.get("RECOVERED", 0)
+    self_cure_rate = (
+        self_cure_count / total_recovered_count if total_recovered_count > 0 else 0.0
+    )
+    # Lift: how much better our recovery engine is vs. organic self-cure
+    lift_over_self_cure = (
+        recovery_rate - self_cure_rate if total_recovered_count > 0 else 0.0
+    )
+
     return RevenueSummary(
         expected_revenue=expected_revenue,
         collected_revenue=collected_revenue,
@@ -199,4 +236,8 @@ def _compute_summary(db: Session) -> RevenueSummary:
         revenue_recovered=total_recovered,
         revenue_remaining=revenue_remaining,
         recovery_rate=round(recovery_rate, 4),
+        self_cure_count=self_cure_count,
+        self_cure_amount=self_cure_amount,
+        self_cure_rate=round(self_cure_rate, 4),
+        lift_over_self_cure=round(lift_over_self_cure, 4),
     )

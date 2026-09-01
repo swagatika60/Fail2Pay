@@ -153,8 +153,11 @@ class TestProviderAttachment:
         mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
 
         with patch("app.services.email.get_settings") as mock_settings:
-            mock_settings.return_value.email_api_key = "test_key"
+            mock_settings.return_value.email_api_key = "re_test_key"
             mock_settings.return_value.email_from_address = "noreply@fail2pay.com"
+            mock_settings.return_value.email_provider = "resend"
+            mock_settings.return_value.email_provider_url = "https://api.resend.com/emails"
+            mock_settings.return_value.email_from_name = "Fail2Pay"
 
             pdf_bytes = b"%PDF-1.4 fake content"
             result = _send_via_provider(
@@ -175,7 +178,7 @@ class TestProviderAttachment:
         assert "attachments" in payload
         assert len(payload["attachments"]) == 1
         assert payload["attachments"][0]["filename"] == "invoice.pdf"
-        assert payload["attachments"][0]["type"] == "application/pdf"
+        assert call_kwargs[0][0] == "https://api.resend.com/emails"
         # Verify base64 encoding
         decoded = base64.b64decode(payload["attachments"][0]["content"])
         assert decoded == pdf_bytes

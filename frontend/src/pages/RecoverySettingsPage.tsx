@@ -175,11 +175,11 @@ export default function RecoverySettingsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 p-6 text-slate-100">
+    <div className="space-y-6">
       <div className="mb-6 flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Recovery Settings</h1>
-          <p className="mt-1 text-sm text-slate-400">
+          <h1 className="text-2xl font-bold tracking-tight text-slate-100">Recovery Settings</h1>
+          <p className="mt-1 text-sm text-slate-500">
             Configure how recovery runs. Saved to the database and applied to all
             cases. Safety protections are always on and cannot be disabled.
           </p>
@@ -187,14 +187,14 @@ export default function RecoverySettingsPage() {
         <div className="flex gap-2">
           <Link
             to="/dashboard"
-            className="rounded-lg bg-slate-800 px-4 py-2 text-sm text-slate-300 hover:bg-slate-700"
+            className="rounded-lg border border-edge bg-panel px-4 py-2 text-sm text-slate-300 transition-colors hover:bg-elevated"
           >
             Dashboard
           </Link>
           <button
             onClick={handleSave}
             disabled={saving}
-            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+            className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
           >
             {saving ? "Saving…" : "Save Settings"}
           </button>
@@ -216,8 +216,8 @@ export default function RecoverySettingsPage() {
         {/* Left: form controls */}
         <div className="space-y-6 lg:col-span-2">
           {/* Recovery basics */}
-          <section className="rounded-xl border border-slate-800 bg-slate-900 p-6">
-            <h2 className="mb-4 text-lg font-semibold text-slate-100">
+          <section className="rounded-xl border border-edge bg-panel p-6">
+            <h2 className="mb-4 text-base font-semibold text-slate-200">
               Recovery Basics
             </h2>
             <div className="grid gap-4 sm:grid-cols-2">
@@ -233,7 +233,7 @@ export default function RecoverySettingsPage() {
                   onChange={(e) =>
                     patch({ max_recovery_attempts: Number(e.target.value) })
                   }
-                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-slate-100"
+                  className="w-full rounded-lg border border-edge bg-panel-2 px-3 py-2 text-sm text-slate-100 transition-colors focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/30"
                 />
                 <span className="mt-1 block text-xs text-slate-500">
                   Hard ceiling {MAX_ATTEMPTS_CAP} — above that is blocked.
@@ -251,7 +251,7 @@ export default function RecoverySettingsPage() {
                   onChange={(e) =>
                     patch({ recovery_window_days: Number(e.target.value) })
                   }
-                  className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-slate-100"
+                  className="w-full rounded-lg border border-edge bg-panel-2 px-3 py-2 text-sm text-slate-100 transition-colors focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/30"
                 />
                 <span className="mt-1 block text-xs text-slate-500">
                   Max {WINDOW_CAP_DAYS} days. After this the case is marked Lost.
@@ -261,8 +261,8 @@ export default function RecoverySettingsPage() {
           </section>
 
           {/* Channels */}
-          <section className="rounded-xl border border-slate-800 bg-slate-900 p-6">
-            <h2 className="mb-4 text-lg font-semibold text-slate-100">
+          <section className="rounded-xl border border-edge bg-panel p-6">
+            <h2 className="mb-4 text-base font-semibold text-slate-200">
               Recovery Channels
             </h2>
             <div className="space-y-3">
@@ -286,9 +286,9 @@ export default function RecoverySettingsPage() {
           </section>
 
           {/* Reminder sequence */}
-          <section className="rounded-xl border border-slate-800 bg-slate-900 p-6">
+          <section className="rounded-xl border border-edge bg-panel p-6">
             <div className="mb-2 flex items-center justify-between">
-              <h2 className="text-lg font-semibold text-slate-100">
+              <h2 className="text-base font-semibold text-slate-200">
                 Reminder Sequence
               </h2>
               <span
@@ -323,7 +323,7 @@ export default function RecoverySettingsPage() {
                       next[index] = Number(e.target.value)
                       setSequence(next)
                     }}
-                    className="w-24 rounded-lg border border-slate-700 bg-slate-800 px-3 py-1.5 text-slate-100"
+                    className="w-24 rounded-lg border border-edge bg-panel-2 px-3 py-1.5 text-sm text-slate-100 transition-colors focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/30"
                   />
                   <span className="text-sm text-slate-400">hours</span>
                   <button
@@ -336,18 +336,18 @@ export default function RecoverySettingsPage() {
                 </div>
               ))}
             </div>
-            <button
-              onClick={addReminder}
-              disabled={settings.default_reminder_sequence.length >= MAX_SEQUENCE_LEN}
-              className="mt-3 rounded-lg bg-slate-800 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-700 disabled:opacity-40"
-            >
-              Add reminder
-            </button>
+        <button
+          onClick={addReminder}
+          disabled={settings.default_reminder_sequence.length >= MAX_SEQUENCE_LEN}
+          className="mt-3 rounded-lg border border-edge bg-panel px-3 py-1.5 text-sm text-slate-300 transition-colors hover:bg-elevated disabled:opacity-40"
+        >
+          Add reminder
+        </button>
           </section>
 
           {/* Payment plans + promise */}
-          <section className="rounded-xl border border-slate-800 bg-slate-900 p-6">
-            <h2 className="mb-4 text-lg font-semibold text-slate-100">
+          <section className="rounded-xl border border-edge bg-panel p-6">
+            <h2 className="mb-4 text-base font-semibold text-slate-200">
               Payment Plans & Promises
             </h2>
             <div className="space-y-3">
@@ -380,7 +380,7 @@ export default function RecoverySettingsPage() {
                 onChange={(e) =>
                   patch({ max_installments: Number(e.target.value) })
                 }
-                className="w-full rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-slate-100"
+                className="w-full rounded-lg border border-edge bg-panel-2 px-3 py-2 text-sm text-slate-100 transition-colors focus:border-blue-500/50 focus:outline-none focus:ring-1 focus:ring-blue-500/30"
               />
               <span className="mt-1 block text-xs text-slate-500">
                 Between 2 and {MAX_INSTALLMENTS_CAP}.
@@ -391,8 +391,8 @@ export default function RecoverySettingsPage() {
 
         {/* Right: safety protections (read-only) */}
         <div className="space-y-6">
-          <section className="rounded-xl border-2 border-green-500/30 bg-green-950/20 p-6">
-            <h2 className="mb-3 text-lg font-semibold text-green-400">
+          <section className="rounded-xl border border-edge bg-panel p-6">
+            <h2 className="mb-3 text-base font-semibold text-slate-200">
               Safety Protections
             </h2>
             <div className="space-y-3 text-sm">
@@ -417,13 +417,13 @@ export default function RecoverySettingsPage() {
                 description="Recovery attempts are hard-capped regardless of settings."
               />
             </div>
-            <p className="mt-4 rounded-lg bg-green-500/10 p-3 text-xs text-green-400">
+            <p className="mt-4 rounded-lg border border-accent/20 bg-accent-soft p-3 text-xs text-accent">
               These protections are enforced by the policy engine and cannot be
               disabled through merchant settings.
             </p>
           </section>
 
-          <section className="rounded-xl border border-slate-800 bg-slate-900 p-6 text-sm">
+          <section className="rounded-xl border border-edge bg-panel p-6 text-sm">
             <h2 className="mb-2 text-sm font-semibold text-slate-300">
               Current Value
             </h2>
@@ -472,7 +472,7 @@ function ChannelToggle({
   onChange: () => void
 }) {
   return (
-    <div className="flex items-center justify-between rounded-lg bg-slate-800/60 px-4 py-3">
+    <div className="flex items-center justify-between rounded-lg border border-edge bg-panel-2 px-4 py-3">
       <div>
         <p className="text-sm font-medium text-slate-200">{label}</p>
         <p className="text-xs text-slate-500">{description}</p>
@@ -481,12 +481,12 @@ function ChannelToggle({
         onClick={onChange}
         role="switch"
         aria-checked={checked}
-        className={`relative h-6 w-11 rounded-full transition-colors ${
-          checked ? "bg-green-500" : "bg-slate-600"
+        className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
+          checked ? "bg-accent" : "bg-slate-600"
         }`}
       >
         <span
-          className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${
+          className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-all ${
             checked ? "left-[22px]" : "left-0.5"
           }`}
         />
@@ -505,10 +505,10 @@ function ProtectionRow({
   description: string
 }) {
   return (
-    <div className="rounded-lg bg-slate-900/60 p-3">
+    <div className="rounded-lg border border-edge bg-panel-2 p-3">
       <div className="flex items-center justify-between">
-        <span className="font-medium text-slate-200">{label}</span>
-        <span className="rounded-full bg-green-500/10 px-2 py-0.5 text-xs font-medium text-green-400">
+        <span className="text-sm font-medium text-slate-200">{label}</span>
+        <span className="rounded-full bg-accent-soft px-2 py-0.5 text-xs font-medium text-accent">
           {value}
         </span>
       </div>

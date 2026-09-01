@@ -15,8 +15,35 @@ class CustomerIntent(str, enum.Enum):
 
     These are the ONLY intents the AI can return.
     Any other intent is rejected and mapped to UNCLEAR.
+
+    Primary intents (AI Recovery Specialist prompt):
+      PAY_NOW          — customer wants to pay immediately
+      SPLIT_EMI        — customer wants to split into installments
+      PAY_LATER        — customer wants to delay payment
+      GREETING         — casual greeting or acknowledgment
+      SUPPORT          — wants to talk to a human agent
+      FALLBACK         — uninterpretable message
+
+    Legacy / granular intents (backward-compatible):
+      PAYMENT_RETRY_REQUEST  — retry a failed payment
+      PAYMENT_LINK_REQUEST   — asking for a payment link
+      INVOICE_REQUEST        — wants an invoice
+      PAYMENT_PLAN_REQUEST   — wants to set up a payment plan
+      PROMISE_TO_PAY         — promising to pay (with or without a date)
+      ALREADY_PAID           — claims they already paid
+      QUESTION               — general question about billing
+      NEGATIVE               — refusing to pay, angry, frustrated
+      STOP_REQUEST           — wants to stop receiving messages
+      UNCLEAR                — ambiguous or unsupported message
     """
 
+    # --- Primary Recovery Specialist intents ---
+    PAY_NOW = "PAY_NOW"
+    SPLIT_EMI = "SPLIT_EMI"
+    PAY_LATER = "PAY_LATER"
+    GREETING = "GREETING"
+
+    # --- Legacy / granular intents ---
     PAYMENT_RETRY_REQUEST = "PAYMENT_RETRY_REQUEST"
     PAYMENT_LINK_REQUEST = "PAYMENT_LINK_REQUEST"
     INVOICE_REQUEST = "INVOICE_REQUEST"
@@ -26,7 +53,57 @@ class CustomerIntent(str, enum.Enum):
     QUESTION = "QUESTION"
     NEGATIVE = "NEGATIVE"
     STOP_REQUEST = "STOP_REQUEST"
+    SUPPORT = "SUPPORT"
     UNCLEAR = "UNCLEAR"
+    FALLBACK = "FALLBACK"
+
+
+# Canonical intent name used in the AI Recovery Specialist prompt.
+# Maps the AI's short-form routing keys to full CustomerIntent values.
+RECOVERY_INTENT_ALIASES: dict[str, CustomerIntent] = {
+    "PAY_NOW": CustomerIntent.PAY_NOW,
+    "SPLIT_EMI": CustomerIntent.SPLIT_EMI,
+    "PAY_LATER": CustomerIntent.PAY_LATER,
+    "GREETING": CustomerIntent.GREETING,
+    "SUPPORT": CustomerIntent.SUPPORT,
+    "FALLBACK": CustomerIntent.FALLBACK,
+    # Legacy mappings (kept for backward compatibility)
+    "PAYMENT_RETRY_REQUEST": CustomerIntent.PAYMENT_RETRY_REQUEST,
+    "PAYMENT_LINK_REQUEST": CustomerIntent.PAYMENT_LINK_REQUEST,
+    "INVOICE_REQUEST": CustomerIntent.INVOICE_REQUEST,
+    "PAYMENT_PLAN_REQUEST": CustomerIntent.PAYMENT_PLAN_REQUEST,
+    "PROMISE_TO_PAY": CustomerIntent.PROMISE_TO_PAY,
+    "ALREADY_PAID": CustomerIntent.ALREADY_PAID,
+    "QUESTION": CustomerIntent.QUESTION,
+    "NEGATIVE": CustomerIntent.NEGATIVE,
+    "STOP_REQUEST": CustomerIntent.STOP_REQUEST,
+    "UNCLEAR": CustomerIntent.UNCLEAR,
+}
+
+# Intents that should trigger a payment card widget in the UI.
+PAYMENT_INTENTS: frozenset[CustomerIntent] = frozenset({
+    CustomerIntent.PAY_NOW,
+    CustomerIntent.SPLIT_EMI,
+    CustomerIntent.PAYMENT_LINK_REQUEST,
+    CustomerIntent.PAYMENT_RETRY_REQUEST,
+    CustomerIntent.PAYMENT_PLAN_REQUEST,
+    CustomerIntent.PROMISE_TO_PAY,
+    CustomerIntent.QUESTION,
+})
+
+# Intents that are clarifications / handoffs / non-payment acknowledgments.
+# These turns must NEVER carry the interactive payment-plan widgets.
+NO_PAYMENT_WIDGET_INTENTS: frozenset[CustomerIntent] = frozenset({
+    CustomerIntent.SUPPORT,
+    CustomerIntent.FALLBACK,
+    CustomerIntent.STOP_REQUEST,
+    CustomerIntent.ALREADY_PAID,
+    CustomerIntent.NEGATIVE,
+    CustomerIntent.INVOICE_REQUEST,
+    CustomerIntent.UNCLEAR,
+    CustomerIntent.GREETING,
+    CustomerIntent.PAY_LATER,
+})
 
 
 # Set of all valid intent values for fast lookup

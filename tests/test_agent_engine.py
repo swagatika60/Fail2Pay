@@ -64,7 +64,7 @@ class TestInitialOutbound:
         assert "₹19,999" in text
         assert "a bank timeout" in text
         assert "060C3F91" in text  # invoice id INV-060C3F91
-        assert "https://pay.fail2pay.com/inv/060c3f91efeb4bb2a2e1cdf4e99e301d" in text
+        assert "http://localhost:5173/pay/060c3f91efeb4bb2a2e1cdf4e99e301d" in text
 
     def test_payload_has_quick_replies_payment_card_language(self):
         payload = agent_engine.build_initial_outbound(
@@ -90,7 +90,7 @@ class TestReply:
             intent="PAYMENT_PLAN_REQUEST",
             split_details={"pay_today": "₹10,000", "pay_later": "₹9,999", "later_hint": "after 15 days"},
         )
-        assert "Absolutely" in payload["text"]
+        assert "Split" in payload["text"] or "split" in payload["text"]
         assert "₹10,000" in payload["text"]
         assert "after 15 days" in payload["text"]
         assert payload["quick_replies"][0]["id"] == "activate_plan"
@@ -128,7 +128,7 @@ class TestEmail:
         assert "bank timeout" not in html  # default reason
         assert "Unsubscribe" in html
         assert "DND" in html
-        assert "pay.fail2pay.com/inv/060c3f91efeb4bb2a2e1cdf4e99e301d" in html
+        assert "http://localhost:5173/pay/060c3f91efeb4bb2a2e1cdf4e99e301d" in html
 
 
 class TestMultiTurnFlow:
@@ -143,7 +143,13 @@ class TestMultiTurnFlow:
         assert resp["detected_intent"] == "PAYMENT_PLAN_REQUEST"
         assert resp["split_plan"]["plan_status"] == "created"
         assert resp["reply_text"]
-        assert resp["agent_payload"]["quick_replies"][0]["id"] == "activate_plan"
+        # Rule 1 (dynamic amount): once the plan is created the card carries the
+        # exact first installment — never the full remaining balance.
+        card = resp["agent_payload"]["payment_card"]
+        assert card["installment"] is True
+        assert card["amount"] == resp["split_plan"]["amounts"][0]
+        assert card["amount"] < case.remaining_amount
+        assert resp["agent_payload"]["quick_replies"][0]["id"] == "pay_now"
 
         from app.models.payment_plan import PaymentPlan
         db_session.expire_all()

@@ -189,10 +189,45 @@ def send_text_message(
 
     if not access_token or not phone_number_id:
         logger.error("WhatsApp credentials not configured")
+        # The outreach was still *generated*: persist it (delivery_status
+        # "not_configured") so the live thread and audit feed reflect the
+        # decision even before the provider is connected. A background webhook
+        # status update flips it to a real delivery_status once creds exist.
+        created_msg = create_conversation_message(
+            db,
+            data=ConversationMessageCreate(
+                conversation_id=conversation.id,
+                direction="outbound",
+                content=message,
+                message_type="text",
+                extra_data={
+                    "language": language,
+                    "delivery_status": "not_configured",
+                    "phone_number": phone_number,
+                    "recovery_case_id": str(recovery_case_id),
+                },
+            ),
+        )
+
+        # Broadcast the generated outreach to live dashboards.
+        from app.services.realtime import publish_message_event
+
+        publish_message_event(
+            conversation_id=str(conversation.id),
+            case_id=str(recovery_case_id),
+            message_id=str(created_msg.id),
+            direction="outbound",
+            content=message,
+            message_type="text",
+            created_at=created_msg.created_at.isoformat() if created_msg.created_at else "",
+            extra_data=created_msg.extra_data,
+        )
+
         return {
             "status": "error",
             "reason": "whatsapp_not_configured",
             "conversation_id": str(conversation.id),
+            "message_id": str(created_msg.id),
         }
 
     api_url = f"{WHATSAPP_API_URL}/{phone_number_id}/messages"
@@ -216,7 +251,7 @@ def send_text_message(
             external_message_id = resp_data.get("messages", [{}])[0].get("id", "")
 
             # --- Step 4: Persist outbound message ---
-            create_conversation_message(
+            created_msg = create_conversation_message(
                 db,
                 data=ConversationMessageCreate(
                     conversation_id=conversation.id,
@@ -231,6 +266,20 @@ def send_text_message(
                         "recovery_case_id": str(recovery_case_id),
                     },
                 ),
+            )
+
+            # Broadcast the outbound message to live dashboards
+            from app.services.realtime import publish_message_event
+
+            publish_message_event(
+                conversation_id=str(conversation.id),
+                case_id=str(recovery_case_id),
+                message_id=str(created_msg.id),
+                direction="outbound",
+                content=message,
+                message_type="text",
+                created_at=created_msg.created_at.isoformat() if created_msg.created_at else "",
+                extra_data=created_msg.extra_data,
             )
 
             # Note: attempt_count is incremented by record_attempt in the orchestrator
@@ -406,7 +455,7 @@ def _process_inbound_text(
         return result
 
     # --- Step 1: Save inbound message ---
-    create_conversation_message(
+    created_msg = create_conversation_message(
         db,
         data=ConversationMessageCreate(
             conversation_id=conversation.id,
@@ -418,8 +467,33 @@ def _process_inbound_text(
                 "from_phone": from_phone,
                 "timestamp": message.get("timestamp", ""),
                 "language": message.get("text", {}).get("language", {}).get("code", "en"),
+                "recovery_case_id": str(conversation.recovery_case_id),
             },
         ),
+    )
+
+    # Broadcast the inbound message to live dashboards
+    from app.services.realtime import (
+        publish_message_event,
+        publish_typing_indicator,
+        publish_reasoning_stream,
+    )
+
+    publish_message_event(
+        conversation_id=str(conversation.id),
+        case_id=str(conversation.recovery_case_id),
+        message_id=str(created_msg.id),
+        direction="inbound",
+        content=content,
+        message_type=message_type,
+        created_at=created_msg.created_at.isoformat() if created_msg.created_at else "",
+        extra_data=created_msg.extra_data,
+    )
+
+    # Show typing indicator while the agent processes
+    publish_typing_indicator(
+        case_id=str(conversation.recovery_case_id),
+        is_typing=True,
     )
 
     logger.info(
@@ -458,8 +532,21 @@ def _process_inbound_text(
         intent_response.source,
     )
 
+    # Stream reasoning steps to the live Agent Thought Stream
+    publish_reasoning_stream(
+        case_id=str(conversation.recovery_case_id),
+        stage="INTENT_PARSING",
+        label=f"Intent: {detected_intent.value.replace('_', ' ').title()}",
+        detail=f"Confidence: {intent_response.result.confidence:.2f}, Source: {intent_response.source}",
+        confidence=intent_response.result.confidence,
+        metadata={"intent": detected_intent.value, "source": intent_response.source},
+    )
+
     # --- Step 3: Get action for intent ---
-    from app.services.intent_action_mapper import get_action_for_intent, render_response
+    from app.services.intent_action_mapper import (
+        get_action_for_intent,
+        render_response,
+    )
     action = get_action_for_intent(detected_intent)
     result["action_type"] = action.action_type
 
@@ -470,12 +557,86 @@ def _process_inbound_text(
         logger.error("Recovery case not found for conversation %s", conversation.id)
         return result
 
+    # --- Terminal guard ---
+    # An already-closed case (recovered/lost) must never execute intent
+    # actions, mutate status, or spawn further outreach. Acknowledge the
+    # closed state only (same determinism as the simulate + agent paths).
+    # STOPPED cases with payment intent are re-activated below.
+    from app.models.recovery_case import RecoveryStatus
+    if case.status in (RecoveryStatus.RECOVERED, RecoveryStatus.LOST):
+        from app.services import agent_engine
+        terminal_recovered = case.status == RecoveryStatus.RECOVERED
+        agent_turn = agent_engine.handle_incoming_message(
+            db=db,
+            case_id=conversation.recovery_case_id,
+            message_text=content,
+            language_pref=None,
+            detected_intent=(
+                "RECOVERED_CONFIRMATION" if terminal_recovered else "STOP_REQUEST"
+            ),
+            create_promise=False,
+            create_plan=False,
+        )
+        send_result = _send_reply(
+            db=db,
+            phone_number=from_phone,
+            message=agent_turn["text"],
+            conversation=conversation,
+            recovery_case_id=case.id,
+            agent_payload=agent_turn["agent_payload"],
+        )
+        result["response_sent"] = send_result.get("status") == "sent"
+        result["response_message_id"] = send_result.get("message_id")
+        result["terminal_ack"] = True
+        return result
+    elif case.status == RecoveryStatus.STOPPED:
+        # If the customer is expressing payment intent on a STOPPED case,
+        # re-activate the case so the recovery workflow resumes.
+        from app.services import agent_engine
+        payment_intents = (
+            CustomerIntent.PAYMENT_LINK_REQUEST,
+            CustomerIntent.PAYMENT_RETRY_REQUEST,
+            CustomerIntent.PROMISE_TO_PAY,
+            CustomerIntent.PAYMENT_PLAN_REQUEST,
+        )
+        if detected_intent in payment_intents:
+            case.status = RecoveryStatus.RECOVERY_IN_PROGRESS
+            case.closed_at = None
+            extra = dict(case.extra_data or {})
+            extra["reactivated_from"] = "STOPPED"
+            case.extra_data = extra
+            db.commit()
+            db.refresh(case)
+            # Fall through to normal processing below.
+        else:
+            # Non-payment intent on a stopped case — acknowledge the stop.
+            agent_turn = agent_engine.handle_incoming_message(
+                db=db,
+                case_id=conversation.recovery_case_id,
+                message_text=content,
+                language_pref=None,
+                detected_intent="STOP_REQUEST",
+                create_promise=False,
+                create_plan=False,
+            )
+            send_result = _send_reply(
+                db=db,
+                phone_number=from_phone,
+                message=agent_turn["text"],
+                conversation=conversation,
+                recovery_case_id=case.id,
+                agent_payload=agent_turn["agent_payload"],
+            )
+            result["response_sent"] = send_result.get("status") == "sent"
+            result["response_message_id"] = send_result.get("message_id")
+            result["terminal_ack"] = True
+            return result
+
     from app.crud.customer import get_customer
     customer = get_customer(db, case.customer_id)
-    from app.config import get_settings
-    settings = get_settings()
-    payment_link_base = getattr(settings, "payment_link_base_url", "https://fail2pay.example.com")
-    payment_link = f"{payment_link_base}/pay/{case.id}"
+    from app.services.agent_engine import payment_url_for_case, get_pay_host
+    payment_link = payment_url_for_case(str(case.id))
+    payment_link_base = get_pay_host()
     invoice_link = f"{payment_link_base}/invoice/{case.id}"
 
     # --- Step 5: Check policy ---
@@ -542,12 +703,67 @@ def _process_inbound_text(
         logger.info("Cancelled %d scheduled actions for case %s", cancelled, case.id)
 
     # --- Step 9: Send response ---
-    response_message = render_response(
-        action=action,
-        customer_name=customer.name if customer else "Customer",
-        amount_paise=case.original_amount,
-        payment_link=overrides.get("payment_link", payment_link),
-        invoice_link=overrides.get("invoice_link", invoice_link),
+    # ALL intents are routed through the contextual agent engine so every
+    # response includes a rich action payload (payment card, quick replies,
+    # language options). This replaces the old split where only plan/promise
+    # intents got agent responses while everything else got plain text.
+    from app.services import agent_engine
+
+    wa_lang = message.get("text", {}).get("language", {}).get("code", "") if message.get("text") else ""
+
+    agent_turn = agent_engine.handle_incoming_message(
+        db=db,
+        case_id=conversation.recovery_case_id,
+        message_text=content,
+        language_pref=wa_lang if wa_lang in ("hi", "hi-en") else None,
+        detected_intent=detected_intent.value,  # Pass pre-detected intent to avoid double AI call
+        create_promise=False,
+        create_plan=False,
+    )
+    response_message = agent_turn["text"]
+    agent_payload = agent_turn["agent_payload"]
+
+    # Inject action-specific overrides into the agent response.
+    # E.g. INVOICE_REQUEST creates a secure invoice URL that must appear
+    # in the response text and the payment card payload.
+    if overrides.get("invoice_link") and detected_intent.value == "INVOICE_REQUEST":
+        inv_url = overrides["invoice_link"]
+        response_message += f"\n\nInvoice: {inv_url}"
+        if agent_payload and agent_payload.get("payment_card"):
+            agent_payload["payment_card"]["url"] = inv_url
+
+    # The customer is actively negotiating → mark SCHEDULED cases as
+    # engaged in active recovery (was a passive/no-response campaign).
+    if case.status == RecoveryStatus.SCHEDULED:
+        case.status = RecoveryStatus.RECOVERY_IN_PROGRESS
+        db.commit()
+        db.refresh(case)
+
+    # Stream policy evaluation + diagnostic reasoning steps
+    remaining = case.remaining_amount
+    attempt_str = f"{case.attempt_count}/{case.max_attempts}"
+    publish_reasoning_stream(
+        case_id=str(conversation.recovery_case_id),
+        stage="POLICY_EVALUATION",
+        label=f"Attempt {attempt_str} · Remaining ₹{remaining // 100}",
+        detail=f"Active attempt {attempt_str} -> response dispatched",
+        confidence=0.95,
+        metadata={"attempt_count": case.attempt_count, "remaining": remaining},
+    )
+    status_val = case.status.value if hasattr(case.status, "value") else str(case.status)
+    publish_reasoning_stream(
+        case_id=str(conversation.recovery_case_id),
+        stage="DIAGNOSTIC_SYNC",
+        label=f"State: {status_val.replace('_', ' ').title()}",
+        detail=f"Updated state: {status_val}, Remaining: ₹{remaining // 100}",
+        confidence=0.98,
+        metadata={"status": status_val},
+    )
+
+    # Clear typing indicator before sending reply
+    publish_typing_indicator(
+        case_id=str(conversation.recovery_case_id),
+        is_typing=False,
     )
 
     send_result = _send_reply(
@@ -556,6 +772,7 @@ def _process_inbound_text(
         message=response_message,
         conversation=conversation,
         recovery_case_id=case.id,
+        agent_payload=agent_payload,
     )
     result["response_sent"] = send_result.get("status") == "sent"
     result["response_message_id"] = send_result.get("message_id")
@@ -642,20 +859,51 @@ def _execute_intent_action(
         )
 
     elif action.action_type == "record_promise":
-        # For PROMISE_TO_PAY: persist a real Promise record
+        # For PROMISE_TO_PAY: persist a real Promise record AND queue the
+        # promise reminder, exactly like the demo driver does, so the
+        # event-driven flow (Promise -> NEXT touchpoint -> reminder) stays
+        # consistent whether the input arrives via a real webhook or via the
+        # simulate-message route.
         from app.services.recovery_settings import get_or_create
         from app.services.promise import create_promise_for_case
+        from app.services import agent_engine
 
         merchant_settings = get_or_create(db)
         if merchant_settings.promise_to_pay_enabled:
+            # Extract the promised date/time from the customer's own words
+            # ("kal", "tomorrow 5 pm", ...) instead of blindly defaulting to
+            # tomorrow 18:00 UTC.
+            promised_when = None
+            if customer_message:
+                try:
+                    promised_when = agent_engine._parse_promise_time(customer_message)
+                except Exception:  # noqa: BLE001 - never let parsing break the flow
+                    logger.warning("Promise time parse failed for %r", customer_message[:80])
+
             promise_result = create_promise_for_case(
-                db, case.id, customer_message=customer_message
+                db,
+                case.id,
+                customer_message=customer_message,
+                promised_date=promised_when,
             )
             logger.info(
                 "Promise recorded for case %s: %s",
                 case.id,
                 promise_result.get("status"),
             )
+
+            # Queue the promise reminder the moment the promise is recorded so
+            # the scheduler has a real downstream touchpoint to fire next.
+            # schedule_reminder_tomorrow broadcasts the typed
+            # scheduled_action_created event itself; create_promise_for_case
+            # broadcasts promise_created + case_status_changed.
+            if promise_result.get("status") == "created":
+                from app.services.agent_flow import schedule_reminder_tomorrow
+
+                reminder = schedule_reminder_tomorrow(db, case.id)
+                promise_result["scheduled_action"] = reminder
+                overrides["promise_scheduled_action"] = reminder
+
             # create_promise_for_case already transitions the case to PROMISED
             overrides["skip_status_update"] = True
 
@@ -742,6 +990,7 @@ def _send_reply(
     message: str,
     conversation,
     recovery_case_id,
+    agent_payload: dict | None = None,
 ) -> dict:
     """Send a reply message and persist it.
 
@@ -754,7 +1003,49 @@ def _send_reply(
 
     if not access_token or not phone_number_id:
         logger.error("WhatsApp credentials not configured")
-        return {"status": "error", "reason": "whatsapp_not_configured"}
+        # The agent reply is still *generated*: persist it (delivery_status
+        # "not_configured", carry the action payload) and broadcast it so the
+        # thread + live feed reflect the reply even when the provider is not
+        # connected. The transport returns "stored" (not "sent") so callers
+        # never mistake a local store for an actual WhatsApp delivery.
+        created_msg = create_conversation_message(
+            db,
+            data=ConversationMessageCreate(
+                conversation_id=conversation.id,
+                direction="outbound",
+                content=message,
+                message_type="text",
+                extra_data={
+                    "delivery_status": "not_configured",
+                    "source": "agent_engine",
+                    "is_reply": True,
+                    "phone_number": phone_number,
+                    "recovery_case_id": str(recovery_case_id),
+                    **({"agent_payload": agent_payload} if agent_payload else {}),
+                },
+            ),
+        )
+
+        # Broadcast the reply to live dashboards.
+        from app.services.realtime import publish_message_event
+
+        publish_message_event(
+            conversation_id=str(conversation.id),
+            case_id=str(recovery_case_id),
+            message_id=str(created_msg.id),
+            direction="outbound",
+            content=message,
+            message_type="text",
+            created_at=created_msg.created_at.isoformat() if created_msg.created_at else "",
+            extra_data=created_msg.extra_data,
+        )
+
+        return {
+            "status": "stored",
+            "reason": "whatsapp_not_configured",
+            "message_id": str(created_msg.id),
+            "conversation_id": str(conversation.id),
+        }
 
     api_url = f"{WHATSAPP_API_URL}/{phone_number_id}/messages"
     headers = {
@@ -777,7 +1068,7 @@ def _send_reply(
             external_message_id = resp_data.get("messages", [{}])[0].get("id", "")
 
             # Persist outbound reply
-            create_conversation_message(
+            created_msg = create_conversation_message(
                 db,
                 data=ConversationMessageCreate(
                     conversation_id=conversation.id,
@@ -790,8 +1081,23 @@ def _send_reply(
                         "phone_number": phone_number,
                         "recovery_case_id": str(recovery_case_id),
                         "is_reply": True,
+                        **({"agent_payload": agent_payload} if agent_payload else {}),
                     },
                 ),
+            )
+
+            # Broadcast the reply to live dashboards
+            from app.services.realtime import publish_message_event
+
+            publish_message_event(
+                conversation_id=str(conversation.id),
+                case_id=str(recovery_case_id),
+                message_id=str(created_msg.id),
+                direction="outbound",
+                content=message,
+                message_type="text",
+                created_at=created_msg.created_at.isoformat() if created_msg.created_at else "",
+                extra_data=created_msg.extra_data,
             )
 
             logger.info("Reply sent: case=%s, message_id=%s", recovery_case_id, external_message_id)

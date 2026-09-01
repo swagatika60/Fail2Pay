@@ -28,6 +28,12 @@ export interface RevenueMap {
     amount: number
     count: number
   }[]
+  recovery_by_failure_reason: {
+    failure_reason: string
+    name: string
+    amount: number
+    count: number
+  }[]
   payment_plan_recovery: {
     plans_count: number
     total_amount: number
@@ -43,6 +49,49 @@ export interface RevenueMap {
     recovery_rate: number
   }
   recovery_timeline: { label: string; recovered: number; cumulative: number }[]
+  recovery_pipeline: RecoveryPipelineStage[]
+  recovery_cost: RecoveryCost
+}
+
+export interface RecoveryPipelineStage {
+  stage: string
+  label: string
+  index: number
+  amount: number
+  count: number
+}
+
+export interface RecoveryCost {
+  whatsapp_messages: number
+  emails: number
+  whatsapp_cost_paise: number
+  email_cost_paise: number
+  total_cost_paise: number
+  recovered_revenue: number
+  cost_of_recovery_ratio: number
+}
+
+export interface AgentStep {
+  step_id: string
+  stage: string
+  type: string
+  label: string
+  detail?: string | null
+  confidence?: number | null
+  latency_ms?: number | null
+  occurred_at?: string | null
+  extra?: Record<string, unknown>
+}
+
+export interface AgentStepsResponse {
+  case_id: string
+  steps: AgentStep[]
+  summary: {
+    step_count: number
+    by_stage: Record<string, number>
+    avg_latency_ms: number
+    max_latency_ms: number
+  }
 }
 
 export interface RevenueSummary {
@@ -59,6 +108,10 @@ export interface RevenueSummary {
   revenue_recovered: number
   revenue_remaining: number
   recovery_rate: number
+  self_cure_count: number
+  self_cure_amount: number
+  self_cure_rate: number
+  lift_over_self_cure: number
 }
 
 export interface RecoveryCaseSummary {
@@ -68,6 +121,7 @@ export interface RecoveryCaseSummary {
   original_amount: number
   risk_level: string
   status: string
+  recovery_stage?: string | null
   recovered_amount: number
   remaining_amount: number
   attempt_count: number
@@ -243,6 +297,25 @@ export interface PolicyTrace {
   layer_counts: Record<string, number>
 }
 
+export interface ScheduledActionSummary {
+  action_id: string
+  action_type: string
+  attempt_number: number
+  channel: string
+  scheduled_for: string | null
+  due: boolean
+}
+
+export interface CaseSchedule {
+  case_id: string
+  total_actions: number
+  pending_count: number
+  executed_count: number
+  cancelled_count: number
+  next_action: ScheduledActionSummary | null
+  pending: ScheduledActionSummary[]
+}
+
 export interface RecoveryCaseDetail {
   id: string
   customer_id: string
@@ -253,6 +326,8 @@ export interface RecoveryCaseDetail {
   risk_level: string
   risk_reason: string | null
   status: string
+  recovery_stage?: string | null
+  recovery_stage_index?: number | null
   original_amount: number
   recovered_amount: number
   remaining_amount: number
@@ -267,7 +342,10 @@ export interface RecoveryCaseDetail {
   source: string | null
   currency: string
   failure_reason: string | null
+  root_cause?: string | null
+  extra_data?: Record<string, unknown> | null
   audit_events: AuditEvent[] | null
+  agent_steps?: AgentStep[] | null
 }
 
 export interface ImpactLedgerStage {

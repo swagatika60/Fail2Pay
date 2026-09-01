@@ -5,6 +5,8 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.services.webhook_handler import (
+    process_mandate_auth_failed,
+    process_order_paid,
     process_payment_captured,
     process_payment_failed,
     verify_webhook_signature,
@@ -60,6 +62,14 @@ async def razorpay_webhook(
 
         elif event_type == "payment.captured":
             result = process_payment_captured(db, payload)
+            return {"status": "ok", "event_type": event_type, "result": result}
+
+        elif event_type == "order.paid":
+            result = process_order_paid(db, payload)
+            return {"status": "ok", "event_type": event_type, "result": result}
+
+        elif event_type in ("subscription.auth.failed", "payment.authorization.failed"):
+            result = process_mandate_auth_failed(db, payload)
             return {"status": "ok", "event_type": event_type, "result": result}
 
         else:

@@ -847,10 +847,12 @@ class TestEdgeCases:
                     provider_message_id="msg1",
                 ),
             )
-            # Update status to sent
-            emails = get_emails_by_case(db, case.id)
-            emails[-1].delivery_status = "sent"
-            db.commit()
+
+        # Update ALL emails status to sent (not just the last one)
+        emails = get_emails_by_case(db, case.id)
+        for email in emails:
+            email.delivery_status = "sent"
+        db.commit()
 
         count = count_emails_by_case_and_type(
             db, case.id, EmailType.FAILED_PAYMENT.value

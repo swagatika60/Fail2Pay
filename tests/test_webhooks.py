@@ -17,7 +17,7 @@ from sqlalchemy import create_engine, StaticPool
 from sqlalchemy.orm import sessionmaker
 
 from app.database import Base, get_db
-from app.main import app
+from app.main import app as _app
 
 # --- SQLite in-memory DB for tests ---
 # Using StaticPool + connect_args so all sessions share the same in-memory database
@@ -40,8 +40,8 @@ def override_get_db():
 
 
 # Set dependency override BEFORE creating TestClient
-app.dependency_overrides[get_db] = override_get_db
-client = TestClient(app)
+_app.dependency_overrides[get_db] = override_get_db
+client = TestClient(_app)
 
 
 @pytest.fixture(autouse=True)
@@ -49,9 +49,12 @@ def setup_and_teardown_db():
     """Create all tables before each test, drop after."""
     import app.models  # noqa: F401 - ensure all models are registered
 
+    # Ensure our DB override is set (other test modules may have popped it)
+    _app.dependency_overrides[get_db] = override_get_db
     Base.metadata.create_all(bind=test_engine)
     yield
     Base.metadata.drop_all(bind=test_engine)
+    _app.dependency_overrides[get_db] = override_get_db
 
 
 # --- Mock webhook payloads ---
@@ -368,6 +371,28 @@ class TestPaymentCapturedWebhook:
         assert case.remaining_amount == 0
         assert case.closed_at is not None
         db.close()
+
+    @patch("app.routes.webhooks.verify_webhook_signature")
+    def test_order_paid_is_handled_not_unsupported(self, mock_verify):
+        """order.paid is a supported webhook (returns processed, not ignored)."""
+        mock_verify.return_value = True
+
+        payload = {
+            "id": "evt_order_paid_route_001",
+            "event": "order.paid",
+            "payload": {"order": {"entity": {"id": "order_route_001"}}},
+        }
+
+        response = client.post(
+            "/api/webhooks/razorpay",
+            json=payload,
+            headers={"X-Razorpay-Signature": "valid_sig"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["event_type"] == "order.paid"
+        assert data["result"]["status"] == "processed"
 
     @patch("app.routes.webhooks.verify_webhook_signature")
     def test_partial_payment_marks_case_partially_recovered(self, mock_verify):

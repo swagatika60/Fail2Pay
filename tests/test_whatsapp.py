@@ -26,12 +26,14 @@ from app.models.revenue_event import RevenueEvent
 from app.models.recovery_case import RecoveryCase, RecoveryStatus
 from app.models.conversation import Conversation, ConversationStatus
 from app.models.conversation_message import ConversationMessage
+from app.models.scheduled_action import ScheduledAction
 from app.services.whatsapp import (
     verify_webhook,
     process_inbound_message,
     send_text_message,
     _find_conversation_by_phone,
 )
+from app.services import agent_engine
 
 # --- SQLite in-memory DB for tests ---
 
@@ -272,6 +274,95 @@ class TestInboundMessageProcessing:
         assert inbound_msgs[0].extra_data["external_message_id"] == "inbound_001"
         db.close()
 
+    def test_process_inbound_promise_to_pay_creates_real_state(self):
+        """Real-webhook PROMISE_TO_PAY drives the full event-driven recovery:
+        persists a Promise, queues the promise reminder touchpoint, flips the
+        case to PROMISED, and sends a contextual + persisted agent reply."""
+        db = TestSessionLocal()
+        customer = create_test_customer(db)
+        revenue_event = create_test_revenue_event(db, customer)
+        case = create_test_recovery_case(db, customer, revenue_event)
+        conversation = create_test_conversation(db, case)
+
+        from app.schemas.conversation_message import ConversationMessageCreate
+        from app.crud.conversation import create_conversation_message
+
+        create_conversation_message(
+            db,
+            ConversationMessageCreate(
+                conversation_id=conversation.id,
+                direction="outbound",
+                content="Please pay your outstanding amount",
+                message_type="text",
+                extra_data={
+                    "phone_number": "+919876543210",
+                    "external_message_id": "outbound_041",
+                    "delivery_status": "sent",
+                },
+            ),
+        )
+
+        payload = {
+            "entry": [
+                {
+                    "changes": [
+                        {
+                            "value": {
+                                "messages": [
+                                    {
+                                        "from": "+919876543210",
+                                        "id": "inbound_promise_041",
+                                        "type": "text",
+                                        "text": {
+                                            "body": "Kal payment kar dunga",
+                                            "language": {"code": "hi"},
+                                        },
+                                        "timestamp": str(int(datetime.now(timezone.utc).timestamp())),
+                                    }
+                                ],
+                                "statuses": [],
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+
+        result = process_inbound_message(db, payload)
+        assert result["messages_processed"] == 1
+        assert result["message_results"][0]["intent"] == "PROMISE_TO_PAY"
+
+        db.expire_all()
+        db.refresh(case)
+
+        # 1) A real tagged Promise record is persisted and the case is PROMISED.
+        from app.crud.promise import get_active_promise_for_case
+        from app.models.recovery_case import RecoveryStatus
+        promise = get_active_promise_for_case(db, case.id)
+        assert promise is not None
+        assert promise.status == "ACTIVE"
+        assert case.status == RecoveryStatus.PROMISED
+
+        # 2) A real promise-reminder touchpoint is queued for the scheduler.
+        from app.models.scheduled_action import ScheduledAction
+        from sqlalchemy import select
+        queued = db.execute(
+            select(ScheduledAction).where(ScheduledAction.recovery_case_id == case.id)
+        ).scalars().all()
+        assert len(queued) >= 1
+        assert any(
+            "promise" in (a.action_type or "").lower()
+            or "promise" in str((a.extra_data or {}).get("reason", "")).lower()
+            for a in queued
+        )
+
+        # 3) A contextual, persisted outbound agent reply was generated.
+        from app.crud.conversation import get_messages_by_conversation
+        messages = get_messages_by_conversation(db, conversation.id)
+        outbound = [m for m in messages if m.direction == "outbound"]
+        assert any("pay" in (m.content or "").lower() or "kal" in (m.content or "").lower() for m in outbound)
+        db.close()
+
     def test_process_inbound_button_message(self):
         """Inbound button reply is saved correctly."""
         db = TestSessionLocal()
@@ -417,6 +508,138 @@ class TestInboundMessageProcessing:
 
         result = process_inbound_message(db, payload)
         assert result["messages_processed"] == 1  # processed but ignored
+        db.close()
+
+
+class TestAutonomousAgentEngine:
+    """The restored autonomous conversation engine (agent_engine.handle_incoming_message).
+
+    Covers the key customer intents end to end: immediate pay, 2x split plan,
+    promise-to-pay with a real ScheduledAction, and Hinglish language detection.
+    """
+
+    def _new_case(self):
+        db = TestSessionLocal()
+        customer = create_test_customer(db)
+        revenue_event = create_test_revenue_event(db, customer)
+        case = create_test_recovery_case(db, customer, revenue_event)
+        return db, case
+
+    def test_immediate_pay_request_builds_pay_card(self):
+        """Pay-now intent → rich payment card + dynamic payment link."""
+        db, case = self._new_case()
+        turn = agent_engine.handle_incoming_message(
+            db=db,
+            case_id=case.id,
+            message_text="I'll pay right now, send the link",
+            detected_intent="PAYMENT_LINK_REQUEST",
+            create_plan=False,
+            create_promise=False,
+        )
+        assert turn["intent"] == "PAYMENT_LINK_REQUEST"
+        assert turn["action"] == "send_payment_link"
+        payload = turn["agent_payload"]
+        assert payload["payment_card"] is not None
+        assert payload["payment_card"]["url"]
+        assert "pay/" in turn["pay_now_url"]
+        assert payload["text"]
+        db.close()
+
+    def test_split_request_builds_2x_breakdown(self):
+        """Installment request → 2-part split with a real Part 1 amount."""
+        db, case = self._new_case()
+        turn = agent_engine.handle_incoming_message(
+            db=db,
+            case_id=case.id,
+            message_text="Can I pay in installments?",
+            detected_intent="PAYMENT_PLAN_REQUEST",
+            create_plan=False,
+            create_promise=False,
+        )
+        assert turn["split"] is not None
+        assert len(turn["split"]["amounts"]) == 2
+        payload = turn["agent_payload"]
+        assert payload["payment_card"] is not None
+        # Part 1 (due today) is a real, positive partial amount — never full, never 0.
+        assert 0 < payload["payment_card"]["amount"] < case.remaining_amount
+        db.close()
+
+    def test_promise_to_pay_creates_scheduled_action(self):
+        """Promise-to-pay → parses time + persists a ScheduledAction reminder."""
+        db, case = self._new_case()
+        turn = agent_engine.handle_incoming_message(
+            db=db,
+            case_id=case.id,
+            message_text="I will pay tomorrow at 5 PM",
+            detected_intent="PROMISE_TO_PAY",
+            create_promise=True,
+        )
+        promise = turn["promise_scheduled"]
+        assert promise is not None
+        assert promise["action_id"] is not None
+        row = db.query(ScheduledAction).filter(
+            ScheduledAction.id == uuid.UUID(str(promise["action_id"]))
+        ).first()
+        assert row is not None
+        assert row.action_type == "reminder"
+        db.close()
+
+    def test_promise_without_side_effect_is_non_persisting(self):
+        """A caller that already recorded the promise skips duplicate ScheduledAction."""
+        db, case = self._new_case()
+        turn = agent_engine.handle_incoming_message(
+            db=db,
+            case_id=case.id,
+            message_text="I will pay tomorrow at 5 PM",
+            detected_intent="PROMISE_TO_PAY",
+            create_promise=False,
+        )
+        assert turn["promise_scheduled"]["action_id"] is None
+        assert db.query(ScheduledAction).count() == 0
+        db.close()
+
+    def test_process_turn_persists_and_returns_payload(self):
+        """process_turn writes the agent reply bubble (with payload) to the thread."""
+        db = TestSessionLocal()
+        customer = create_test_customer(db)
+        revenue_event = create_test_revenue_event(db, customer)
+        case = create_test_recovery_case(db, customer, revenue_event)
+        conversation = create_test_conversation(db, case)
+
+        turn = agent_engine.process_turn(
+            db=db,
+            case_id=case.id,
+            message_text="Can I pay in installments?",
+            detected_intent="PAYMENT_PLAN_REQUEST",
+            create_plan=False,
+            persist=True,
+        )
+        assert turn["reply_text"]
+        assert turn["conversation_id"] == str(conversation.id)
+
+        from app.crud.conversation import get_messages_by_conversation
+
+        outbound = [
+            m
+            for m in get_messages_by_conversation(db, conversation.id)
+            if m.direction == "outbound"
+        ]
+        assert len(outbound) == 1
+        assert outbound[0].extra_data.get("agent_payload")
+        db.close()
+
+    def test_hinglish_message_detected(self):
+        """Hinglish customer tone → agent replies in Romanized Hinglish."""
+        db, case = self._new_case()
+        turn = agent_engine.handle_incoming_message(
+            db=db,
+            case_id=case.id,
+            message_text="EMI option hai, mujhe chahiye bhaijaan",
+            detected_intent="PAYMENT_PLAN_REQUEST",
+            create_plan=False,
+        )
+        assert turn["language"] == "hi-en"
+        assert "ji" in turn["text"]  # respectful Hinglish honorific
         db.close()
 
 

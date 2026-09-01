@@ -1,15 +1,21 @@
 """No-Response Recovery Scheduler.
 
-Default sequence:
-    T+0     Initial recovery message
-    T+4h    Reminder 1 (4 hours delay)
-    T+12h   Reminder 2 (8 hours after reminder 1)
-    T+28h   Reminder 3 (16 hours after reminder 2)
-    T+60h   Final reminder (32 hours after reminder 3)
-    Then:   STOP COMPLETELY
+Spaced-out reminder cadence (absolute from T0):
+    T+0      Initial recovery message
+    T+4h     Reminder 1 (4 hours after failure)
+    T+8h     Reminder 2 (8 hours after failure)
+    T+16h    Reminder 3 (16 hours after failure)
+    T+24h    Reminder 4 (24 hours after failure)
+    T+48h    Final reminder (48 hours after failure)
+    Then:    STOP COMPLETELY
+
+Pre-Send Settlement Check:
+    Before dispatching EACH scheduled reminder, the system verifies
+    payment status. If the payment is already SETTLED or PAID, all
+    remaining pending reminders are cancelled and no message is sent.
 
 Before EVERY reminder:
-    ✓ Check payment status (recovered? → stop)
+    ✓ Check payment status (recovered/settled/paid? → stop)
     ✓ Check conversation (customer responded? → handle response)
     ✓ Check opt-out (customer opted out? → stop)
     ✓ Check recovery status (terminal? → stop)
@@ -27,6 +33,7 @@ If customer says "Stop", "No", etc.:
 No AI involved — pure deterministic scheduling.
 """
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -45,20 +52,28 @@ from app.crud.scheduled_action import (
 from app.models.recovery_case import RecoveryCase, RecoveryStatus
 from app.models.scheduled_action import ScheduledAction
 from app.schemas.scheduled_action import ScheduledActionCreate
+from app.services.agent_engine import format_amount
 from app.services.workflow_engine import _check_stop_conditions
 
 logger = logging.getLogger(__name__)
 
 
 # --- Default schedule configuration ---
-# Exponential backoff: 4h → 8h → 16h → 32h = total 60h
-# T+0: initial, T+4: reminder_1, T+12: reminder_2, T+28: reminder_3, T+60: final
+# Spaced-out cadence (absolute from T0):
+# T+0      Initial message (sent by orchestrator)
+# T+4h     Reminder 1
+# T+8h     Reminder 2
+# T+16h    Reminder 3
+# T+24h    Reminder 4
+# T+48h    Final reminder
+# Then: STOP COMPLETELY
 DEFAULT_SCHEDULE_CONFIG = [
     {"delay_hours": 0, "action_type": "initial_message", "channel": "whatsapp"},
     {"delay_hours": 4, "action_type": "reminder_1", "channel": "whatsapp"},
-    {"delay_hours": 12, "action_type": "reminder_2", "channel": "whatsapp"},
-    {"delay_hours": 28, "action_type": "reminder_3", "channel": "whatsapp"},
-    {"delay_hours": 60, "action_type": "final_reminder", "channel": "whatsapp"},
+    {"delay_hours": 8, "action_type": "reminder_2", "channel": "whatsapp"},
+    {"delay_hours": 16, "action_type": "reminder_3", "channel": "whatsapp"},
+    {"delay_hours": 24, "action_type": "reminder_4", "channel": "whatsapp"},
+    {"delay_hours": 48, "action_type": "final_reminder", "channel": "whatsapp"},
 ]
 
 # Stop request keywords (lowercase)
@@ -70,6 +85,16 @@ STOP_KEYWORDS = [
     "band karo", "mat bhejo",  # Hinglish
 ]
 
+# --- WhatsApp audit touchpoint schedule ---
+# Used by the live WhatsApp recovery stream: the first touchpoint is dispatched
+# immediately on payment_failed and two automated reminders follow at 24h and
+# 72h (so the case reaches a human auditor / final escalation within the SLA).
+WHATSAPP_TOUCHPOINT_CONFIG = [
+    {"delay_hours": 0, "action_type": "touchpoint_immediate", "channel": "whatsapp"},
+    {"delay_hours": 24, "action_type": "touchpoint_24h", "channel": "whatsapp"},
+    {"delay_hours": 72, "action_type": "touchpoint_72h", "channel": "whatsapp"},
+]
+
 
 def schedule_recovery_workflow(
     db: Session,
@@ -78,8 +103,12 @@ def schedule_recovery_workflow(
 ) -> list[dict]:
     """Schedule the no-response recovery workflow.
 
-    Creates 5 scheduled actions with exponential backoff:
-        T+0 → T+4h → T+12h → T+28h → T+60h → STOP
+    Creates 6 scheduled actions with spaced-out cadence (absolute from T0):
+        T+0 → T+4h → T+8h → T+16h → T+24h → T+48h → STOP
+
+    Before each reminder, the scheduler checks payment status. If the
+    payment is already SETTLED or PAID, all remaining reminders are
+    cancelled and no message is sent.
 
     Args:
         db: Database session
@@ -94,6 +123,10 @@ def schedule_recovery_workflow(
 
     created = []
     for i, step in enumerate(config):
+        # Support both delay_hours and delay_minutes for fine-grained scheduling.
+        delay_h = step.get("delay_hours", 0)
+        delay_m = step.get("delay_minutes", 0)
+        delay = timedelta(hours=delay_h, minutes=delay_m)
         action = create_scheduled_action(
             db,
             data=ScheduledActionCreate(
@@ -101,7 +134,7 @@ def schedule_recovery_workflow(
                 action_type=step["action_type"],
                 attempt_number=i + 1,
                 channel=step["channel"],
-                scheduled_for=now + timedelta(hours=step["delay_hours"]),
+                scheduled_for=now + delay,
             ),
         )
         created.append(
@@ -120,19 +153,75 @@ def schedule_recovery_workflow(
     return created
 
 
+def schedule_whatsapp_touchpoints(
+    db: Session,
+    case: RecoveryCase,
+) -> list[dict]:
+    """Schedule the WhatsApp audit touchpoint sequence (0h / 24h / 72h).
+
+    Called when a real Meta payment.failed webhook creates a recovery case.
+    Touchpoint #1 (immediate) is dispatched by the orchestrator right away;
+    the 24h and 72h entries are queued here for the background worker.
+    """
+    return schedule_recovery_workflow(db, case, schedule_config=WHATSAPP_TOUCHPOINT_CONFIG)
+
+
+def schedule_followup_touchpoints(
+    db: Session,
+    case: RecoveryCase,
+) -> list[dict]:
+    """Queue the follow-up touchpoints (24h / 72h) AFTER the immediate ping.
+
+    Called post-ingestion once the first touch has already been dispatched by
+    the orchestrator, so we only queue the two later escalations for the
+    background worker — the immediate (T+0) entry is not re-created.
+    """
+    followup_config = WHATSAPP_TOUCHPOINT_CONFIG[1:]  # 24h, 72h
+    return schedule_recovery_workflow(db, case, schedule_config=followup_config)
+
+
+def schedule_promise_reminder(
+    db: Session,
+    case: RecoveryCase,
+    reminder_for: datetime,
+) -> dict:
+    """Queue a single promise reminder at an absolute timestamp.
+
+    Used when a customer makes a promise-to-pay: a friendly reminder is
+    scheduled just before the promised date so the customer is nudged when
+    their commitment is due (and paused before then since the promise is live).
+    """
+    action = create_scheduled_action(
+        db,
+        data=ScheduledActionCreate(
+            recovery_case_id=case.id,
+            action_type="promise_reminder",
+            attempt_number=1,
+            channel="whatsapp",
+            scheduled_for=reminder_for,
+        ),
+    )
+    logger.info(
+        "Scheduled promise reminder %s for case %s at %s",
+        action.id, case.id, action.scheduled_for,
+    )
+    return {
+        "id": str(action.id),
+        "action_type": action.action_type,
+        "channel": action.channel,
+        "scheduled_for": action.scheduled_for.isoformat(),
+    }
+
+
 def process_due_actions(db: Session) -> dict:
-    """Process all due scheduled actions.
+    """Process all due scheduled actions AND the B2B receivables escalation cycle.
 
-    This should be called periodically (e.g., by a cron job or background task).
-
-    For each due action:
-    1. Re-check ALL stop conditions
-    2. If stop condition met → cancel this + all remaining
-    3. If case is terminal → skip
-    4. Otherwise → execute the action
+    This is the single heartbeat of the autonomous scheduler:
+      1. Process all due recovery-case scheduled actions (WhatsApp reminders, etc.)
+      2. Run the B2B receivables chaser batch (overdue detection + escalation emails)
 
     Returns:
-        Summary dict with executed/cancelled/skipped counts
+        Summary dict with executed/cancelled/skipped counts + receivables results
     """
     due_actions = get_due_actions(db)
 
@@ -149,7 +238,100 @@ def process_due_actions(db: Session) -> dict:
         results["details"].append(detail)
         results[detail["result"]] += 1
 
+    # --- B2B Receivables Chaser ---
+    # Detect overdue invoices and send escalation emails automatically.
+    try:
+        from app.services.receivables_chaser import run_batch_escalation
+
+        receivables_result = run_batch_escalation(db)
+        results["receivables"] = receivables_result
+    except Exception as exc:
+        logger.error("Receivables chaser batch failed: %s", exc, exc_info=True)
+        results["receivables"] = {"error": str(exc)}
+
     return results
+
+
+# --- Background polling loop -----------------------------------------------
+
+# Default poll cadence for the autonomous scheduler loop (in seconds).
+SCHEDULER_POLL_INTERVAL_SECONDS = 30
+
+# Each poll opens a fresh DB session (via the app's session factory) so the loop
+# never shares a session across requests and can safely run as a long-lived task.
+_scheduler_session_factory = None
+
+
+def set_scheduler_session_factory(factory) -> None:
+    """Optional: provide the app's DB session factory to the scheduler loop.
+
+    When set, ``run_scheduler_loop`` opens a fresh session per poll through
+    this factory. Otherwise it falls back to ``SessionLocal`` from app.database.
+    """
+    global _scheduler_session_factory
+    _scheduler_session_factory = factory
+
+
+async def run_scheduler_loop(
+    poll_interval: float = SCHEDULER_POLL_INTERVAL_SECONDS,
+    stop_event: asyncio.Event | None = None,
+    on_tick=None,
+) -> None:
+    """Long-lived background loop that polls for and processes due actions.
+
+    Runs ``process_due_actions`` every ``poll_interval`` seconds until
+    ``stop_event`` is set (or indefinitely when none is provided). Each tick is
+    run in a thread executor so the blocking SQLAlchemy work never stalls the
+    event loop. ``on_tick(results)`` is invoked after every successful poll
+    (useful for tests / observability).
+
+    This is consumed by the FastAPI app lifespan and can also be spawned by a
+    supervisor process when a web worker's lifespan is not available.
+    """
+    import asyncio
+
+    logger.info("Autonomous scheduler loop started (poll=%ss)", poll_interval)
+    try:
+        while True:
+            if stop_event is not None and stop_event.is_set():
+                break
+
+            loop = asyncio.get_running_loop()
+            results = await loop.run_in_executor(None, run_one_due_poll)
+            if on_tick is not None:
+                on_tick(results)
+
+            if stop_event is not None:
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=poll_interval)
+                except asyncio.TimeoutError:
+                    continue
+            else:
+                await asyncio.sleep(poll_interval)
+    finally:
+        logger.info("Autonomous scheduler loop stopped")
+
+
+def run_one_due_poll() -> dict:
+    """Run a single scheduler poll against a fresh DB session.
+
+    Safe to call from any context (a test, a manual ops endpoint, or the loop's
+    thread executor). Opens its own session and always closes it.
+    """
+    session = _open_scheduler_session()
+    try:
+        return process_due_actions(session)
+    finally:
+        session.close()
+
+
+def _open_scheduler_session():
+    """Open a session from the configured factory (or the app default)."""
+    if _scheduler_session_factory is not None:
+        return _scheduler_session_factory()
+    from app.database import SessionLocal
+
+    return SessionLocal()
 
 
 def process_single_action(db: Session, action: ScheduledAction) -> dict:
@@ -208,13 +390,31 @@ def process_single_action(db: Session, action: ScheduledAction) -> dict:
             "reason": f"case_terminal_{case.status.value}",
         }
 
-    # --- Check 3: Payment recovered ---
+    # --- Check 3: Payment recovered (remaining amount zero) ---
     if case.remaining_amount <= 0:
         _stop_case(db, case, "payment_recovered")
+        cancel_pending_actions_for_case(
+            db, case.id, reason="payment_recovered"
+        )
         return {
             "action_id": str(action.id),
             "result": "cancelled",
             "reason": "payment_recovered",
+        }
+
+    # --- Check 3b: Pre-send settlement check (PAID / SETTLED status) ---
+    # Before dispatching each reminder, verify the payment status on the
+    # revenue event. If Razorpay (or any gateway) already marked the
+    # payment as captured/settled, cancel all remaining reminders.
+    if _check_payment_settled(db, case):
+        _stop_case(db, case, "payment_settled")
+        cancel_pending_actions_for_case(
+            db, case.id, reason="payment_settled"
+        )
+        return {
+            "action_id": str(action.id),
+            "result": "cancelled",
+            "reason": "payment_settled",
         }
 
     # --- Check 4: Max attempts reached ---
@@ -249,6 +449,19 @@ def process_single_action(db: Session, action: ScheduledAction) -> dict:
             "reason": "customer_opted_out",
         }
 
+    # --- Check 6b: Case is under active dispute / escalated to a human ---
+    # A wrong-bill / chargeback / dispute is NOT a terminal stop: it pauses
+    # outreach while a human resolves it. Any eager scheduled touchpoint or
+    # reminder is cancelled so the agent does not keep pinging a customer
+    # whose bill is being contested.
+    if _check_case_disputed(db, case):
+        cancel_action(db, action.id, reason="case_disputed_escalated")
+        return {
+            "action_id": str(action.id),
+            "result": "cancelled",
+            "reason": "case_disputed_escalated",
+        }
+
     # --- Check 7: Customer responded (check conversation) ---
     if _check_customer_responded(db, case):
         # Customer has responded — cancel generic reminders
@@ -270,7 +483,45 @@ def process_single_action(db: Session, action: ScheduledAction) -> dict:
         }
 
     # --- All checks passed — execute the action ---
+    now = datetime.now(timezone.utc)
+    action.scheduled_at = now
+    send_result = _dispatch_action(db, case, action)
+    db.flush()
+
     mark_action_executed(db, action.id)
+
+    # Notify live dashboards that a scheduled touchpoint ran.
+    from app.services.realtime import publish_message_event, publish_case_event
+
+    publish_message_event(
+        conversation_id="",
+        case_id=str(case.id),
+        message_id=str(action.id),
+        direction="system",
+        content=f"scheduled_action:{action.action_type}",
+        message_type="scheduled_action",
+        created_at=now.isoformat(),
+        extra_data={
+            "action_type": action.action_type,
+            "attempt_number": action.attempt_number,
+            "channel": action.channel,
+            "send_status": send_result.get("status") if send_result else None,
+        },
+    )
+
+    # Typed domain event so the live console can badge the reminder as sent.
+    if action.action_type in ("reminder_1", "reminder_2", "reminder_3", "final_reminder"):
+        publish_case_event(
+            event_type="reminder_sent",
+            case_id=str(case.id),
+            data={
+                "action_type": action.action_type,
+                "attempt_number": action.attempt_number,
+                "channel": action.channel,
+                "scheduled_at": now.isoformat(),
+                "sent": bool(send_result and send_result.get("status") in ("sent", "sent_no_whatsapp")),
+            },
+        )
 
     logger.info(
         "Executed action %s (type=%s, channel=%s) for case %s",
@@ -283,11 +534,132 @@ def process_single_action(db: Session, action: ScheduledAction) -> dict:
     return {
         "action_id": str(action.id),
         "result": "executed",
-        "reason": None,
+        "reason": send_result.get("reason") if send_result else None,
+        "send_status": send_result.get("status") if send_result else None,
         "action_type": action.action_type,
         "channel": action.channel,
         "attempt_number": action.attempt_number,
     }
+
+
+def _dispatch_action(db: Session, case: RecoveryCase, action: ScheduledAction) -> dict | None:
+    """Actually dispatch a scheduled touchpoint to its channel.
+
+    For whatsapp-channel actions this sends the reminder through the standard
+    policy + hard-stop gateway (send_text_message), which also persists the
+    outbound message. Returns the transport result (never raises on a
+    not-configured transport, so scheduled actions still record as executed).
+
+    When WhatsApp is unavailable (not configured, no phone, blocked by policy),
+    falls back to sending an email reminder so the customer is never left
+    unreached.
+    """
+    if action.channel != "whatsapp":
+        return None
+
+    from app.crud.customer import get_customer
+
+    customer = get_customer(db, case.customer_id)
+    phone = customer.phone if customer else None
+
+    text = _build_reminder_text(case, customer.name if customer else None, action)
+
+    # --- Try WhatsApp first ---
+    if phone:
+        from app.services.whatsapp import send_text_message
+        result = send_text_message(
+            db,
+            phone_number=phone,
+            message=text,
+            recovery_case_id=case.id,
+        )
+        if result and result.get("status") in ("sent", "stored"):
+            return result
+        # WhatsApp failed or not configured — fall through to email
+        logger.info(
+            "WhatsApp unavailable for case %s (status=%s), falling back to email",
+            case.id, result.get("status") if result else "no_result",
+        )
+
+    # --- Email fallback ---
+    if customer and customer.email:
+        from app.services.email import EmailType, send_recovery_email
+        from app.services.agent_engine import payment_url_for_case
+
+        email_type = EmailType.PAYMENT_RETRY.value
+        if action.action_type == "initial_message":
+            email_type = EmailType.FAILED_PAYMENT.value
+        elif action.action_type == "final_reminder":
+            email_type = EmailType.PAYMENT_RETRY.value
+
+        email_result = send_recovery_email(
+            db=db,
+            case_id=case.id,
+            email_type=email_type,
+            payment_link=payment_url_for_case(str(case.id)),
+        )
+        return {
+            "status": "sent_email",
+            "channel": "email",
+            "email_status": email_result.get("status"),
+            "email_id": email_result.get("email_id"),
+        }
+
+    return {"status": "skipped", "reason": "no_phone_and_no_email"}
+
+
+def _build_reminder_text(case: RecoveryCase, customer_name: str | None, action: ScheduledAction) -> str:
+    """Deterministic reminder copy for a scheduled touchpoint.
+
+    Copy varies by action type to match the spec cadence:
+    - initial_message: Gentle heads-up with root cause advice (sent by orchestrator)
+    - reminder_1 (T+4h): First follow-up
+    - reminder_2 (T+12h): Second follow-up
+    - reminder_3 (T+28h): Third follow-up
+    - final_reminder (T+60h): Final check-in before STOP
+    """
+    amount = format_amount(case.remaining_amount) if case.remaining_amount else ""
+    name = customer_name or ""
+    prefix = f"Hi {name}, " if name else "Hi there, "
+
+    # Root cause specific advice when available
+    root_cause = (case.extra_data or {}).get("root_cause") if case.extra_data else None
+    cause_hint = ""
+    if root_cause == "daily_limit_exceeded":
+        cause_hint = "You can try Net Banking or Credit Card, or split the payment. "
+    elif root_cause in ("insufficient_funds", "insufficient balance"):
+        cause_hint = "We understand — you can tell us a preferred date to retry. "
+    elif root_cause in ("bank_timeout", "payment_gateway_timeout", "network_error"):
+        cause_hint = "If any amount was deducted, it will be reversed automatically. "
+
+    if action.action_type == "initial_message":
+        return f"{prefix}Your payment of {amount} is pending. {cause_hint}Please complete it now to resolve this."
+    elif action.action_type == "reminder_1":
+        # First follow-up — 4 hours after initial
+        return (
+            f"{prefix}Your payment of {amount} is still pending. "
+            f"{cause_hint}Please complete it to avoid further follow-ups."
+        )
+    elif action.action_type == "reminder_2":
+        # Second follow-up — 12 hours after initial
+        return (
+            f"{prefix}Your payment of {amount} remains unresolved. "
+            f"{cause_hint}You can split into installments or tell us a preferred date."
+        )
+    elif action.action_type == "reminder_3":
+        # Third follow-up — 28 hours after initial
+        return (
+            f"{prefix}We haven't heard from you about the pending payment of {amount}. "
+            f"Please reply or pay to keep your account in good standing."
+        )
+    elif action.action_type == "final_reminder":
+        # Final check-in — 60 hours after initial, before STOP
+        return (
+            f"{prefix}This is your final reminder for payment of {amount}. "
+            f"After this, automated follow-ups will stop. Please reply or pay now."
+        )
+    # Default fallback
+    return f"{prefix}Your payment of {amount} is still pending. Please complete it at your earliest convenience."
 
 
 def handle_customer_response(
@@ -533,6 +905,32 @@ def _check_customer_opted_out(db: Session, case: RecoveryCase) -> bool:
     return False
 
 
+def _check_case_disputed(db: Session, case: RecoveryCase) -> bool:
+    """Check if the case is under active dispute / escalated to a human.
+
+    A case is treated as disputed when a customer raised a wrong-bill /
+    chargeback / dispute that escalated to the billing desk. The agent pauses
+    automated outreach (cancelling eager touchpoints) while the human owns it.
+
+    Detection sources (in priority order):
+      1. The ``escalated_to_human`` flag persisted on the case when a QUESTION
+         / wrong-bill intent escalates to the human billing desk.
+      2. A dispute/chargeback keyword in the stored failure/risk reasons.
+    """
+    extra = case.extra_data or {}
+    if extra.get("escalated_to_human") or extra.get("is_disputed"):
+        return True
+
+    reason_blob = f"{extra.get('failure_reason') or ''} {case.risk_reason or ''}".lower()
+    if any(
+        token in reason_blob
+        for token in ("dispute", "chargeback", "wrong.bill", "wrong bill", "not.mine", "not mine")
+    ):
+        return True
+
+    return False
+
+
 def _check_customer_responded(db: Session, case: RecoveryCase) -> bool:
     """Check if customer has responded since the last message.
 
@@ -579,6 +977,67 @@ def _check_active_promise(db: Session, case: RecoveryCase) -> bool:
     from app.crud.promise import get_active_promise_for_case
     promise = get_active_promise_for_case(db, case.id)
     return promise is not None
+
+
+def _check_payment_settled(db: Session, case: RecoveryCase) -> bool:
+    """Check if the payment for this case has been settled/paid.
+
+    Verifies across multiple sources:
+      1. Revenue event status is 'captured' (Razorpay confirmed)
+      2. A verified Payment row with status 'captured' exists
+      3. Invoice status is PAID (if invoices are tracked)
+
+    Returns True if any source confirms the payment is settled.
+    """
+    from sqlalchemy import select
+
+    # Source 1: Revenue event marked as captured
+    if case.revenue_event_id:
+        from app.models.revenue_event import RevenueEvent
+
+        rev_event = db.execute(
+            select(RevenueEvent).where(RevenueEvent.id == case.revenue_event_id)
+        ).scalar_one_or_none()
+        if rev_event and rev_event.status in ("captured", "settled", "paid"):
+            logger.info(
+                "Payment settled via revenue event %s (status=%s) for case %s",
+                rev_event.id, rev_event.status, case.id,
+            )
+            return True
+
+    # Source 2: Verified Payment row with captured status
+    from app.models.payment import Payment
+
+    captured_payment = db.execute(
+        select(Payment).where(
+            Payment.recovery_case_id == case.id,
+            Payment.status == "captured",
+        )
+    ).scalar_one_or_none()
+    if captured_payment:
+        logger.info(
+            "Payment settled via captured payment %s for case %s",
+            captured_payment.id, case.id,
+        )
+        return True
+
+    # Source 3: Invoice marked as PAID
+    from app.models.invoice import Invoice, InvoiceStatus
+
+    paid_invoice = db.execute(
+        select(Invoice).where(
+            Invoice.recovery_case_id == case.id,
+            Invoice.status == InvoiceStatus.PAID.value,
+        )
+    ).scalar_one_or_none()
+    if paid_invoice:
+        logger.info(
+            "Payment settled via paid invoice %s for case %s",
+            paid_invoice.id, case.id,
+        )
+        return True
+
+    return False
 
 
 def _stop_case(db: Session, case: RecoveryCase, reason: str) -> None:

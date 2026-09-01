@@ -56,6 +56,7 @@ def create_promise_for_case(
     customer_message: str | None = None,
     promised_date: datetime | None = None,
     promise_window_hours: int = DEFAULT_PROMISE_WINDOW_HOURS,
+    count_attempt: bool = True,
 ) -> dict:
     """Create a promise for a recovery case.
 
@@ -67,6 +68,11 @@ def create_promise_for_case(
         customer_message: What the customer said
         promised_date: When they promise to pay (default: tomorrow)
         promise_window_hours: Grace period after promised date
+        count_attempt: Whether this promise counts as a recovery attempt. When
+            FALSE (merchant manual override at the attempt cap) the Promise is
+            still persisted and reminders still paused, but the case is NOT
+            re-stopped by the attempt bookkeeping — a manual action must never
+            hard-stop the case or re-arm automation.
 
     Returns:
         dict with promise details or error
@@ -100,13 +106,14 @@ def create_promise_for_case(
     # Set expiry: promised_date + window
     expires_at = promised_date + timedelta(hours=promise_window_hours)
 
-    # Create the promise
+    # Create the promise — use the authoritative remaining amount
+    effective_amount = case.remaining_amount if case.remaining_amount > 0 else case.original_amount
     promise = create_promise(
         db,
         data=PromiseCreate(
             recovery_case_id=case.id,
             customer_id=customer.id,
-            amount_promised=case.original_amount,
+            amount_promised=effective_amount,
             currency="INR",
             promised_date=promised_date,
             promise_window_hours=promise_window_hours,
@@ -134,17 +141,18 @@ def create_promise_for_case(
 
     # Record the attempt
     from app.services.workflow_engine import record_attempt
-    record_attempt(
-        db=db,
-        case_id=case.id,
-        channel="whatsapp",
-        result="promised",
-        extra_data={
-            "promise_id": str(promise.id),
-            "promised_date": promised_date.isoformat(),
-            "expires_at": expires_at.isoformat(),
-        },
-    )
+    if count_attempt:
+        record_attempt(
+            db=db,
+            case_id=case.id,
+            channel="whatsapp",
+            result="promised",
+            extra_data={
+                "promise_id": str(promise.id),
+                "promised_date": promised_date.isoformat(),
+                "expires_at": expires_at.isoformat(),
+            },
+        )
 
     # Audit
     from app.crud.audit_event import create_audit_event
@@ -166,6 +174,27 @@ def create_promise_for_case(
                 "customer_message": customer_message[:500] if customer_message else None,
             },
         ),
+    )
+
+    # Broadcast typed domain events so live dashboards react to real state,
+    # regardless of the entry point (real webhook, demo driver, scheduler).
+    from app.services.realtime import publish_case_event
+
+    publish_case_event(
+        event_type="promise_created",
+        case_id=str(case.id),
+        data={
+            "promise_id": str(promise.id),
+            "amount_promised": promise.amount_promised,
+            "promised_date": promised_date.isoformat(),
+            "expires_at": expires_at.isoformat(),
+            "customer_message": customer_message,
+        },
+    )
+    publish_case_event(
+        event_type="case_status_changed",
+        case_id=str(case.id),
+        data={"status": "PROMISED"},
     )
 
     logger.info(
@@ -215,6 +244,13 @@ def fulfill_promise(
     # Update case with payment
     from app.services.workflow_engine import mark_payment_received
     payment_result = mark_payment_received(db, case_id, amount_paid)
+
+    # Full recovery → run the deterministic finalizer so the settled case
+    # leaves zero footprint (close plans, cancel emails/actions, expire links,
+    # mark invoices paid).
+    if payment_result.get("fully_recovered"):
+        from app.services.workflow_engine import finalize_recovered_case
+        finalize_recovered_case(db, case, reason="promise_fulfilled")
 
     # Audit
     from app.crud.audit_event import create_audit_event

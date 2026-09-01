@@ -79,7 +79,7 @@ export default function ConversationsPage() {
             className={`rounded-full border px-3 py-1.5 text-xs font-medium ${
               channel === "all"
                 ? "border-blue-500/40 bg-blue-600/15 text-blue-400"
-                : "border-slate-800 text-slate-400 hover:text-slate-300"
+                : "border-edge text-slate-400 hover:text-slate-300"
             }`}
           >
             All <span className="ml-1 opacity-70">{channelCounts.all}</span>
@@ -89,7 +89,7 @@ export default function ConversationsPage() {
             className={`rounded-full border px-3 py-1.5 text-xs font-medium ${
               channel === "whatsapp"
                 ? "border-blue-500/40 bg-blue-600/15 text-blue-400"
-                : "border-slate-800 text-slate-400 hover:text-slate-300"
+                : "border-edge text-slate-400 hover:text-slate-300"
             }`}
           >
             WhatsApp <span className="ml-1 opacity-70">{channelCounts.whatsapp ?? 0}</span>
@@ -99,7 +99,7 @@ export default function ConversationsPage() {
             className={`rounded-full border px-3 py-1.5 text-xs font-medium ${
               channel === "email"
                 ? "border-blue-500/40 bg-blue-600/15 text-blue-400"
-                : "border-slate-800 text-slate-400 hover:text-slate-300"
+                : "border-edge text-slate-400 hover:text-slate-300"
             }`}
           >
             Email <span className="ml-1 opacity-70">{channelCounts.email ?? 0}</span>
@@ -109,7 +109,7 @@ export default function ConversationsPage() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search by customer or message…"
-          className="w-full rounded-lg border border-slate-800 bg-slate-900 py-1.5 pl-3 pr-3 text-sm text-slate-200 placeholder:text-slate-600 sm:max-w-xs"
+          className="w-full rounded-lg border border-edge bg-panel py-1.5 pl-3 pr-3 text-sm text-slate-200 placeholder:text-slate-600 sm:max-w-xs"
         />
       </div>
 
@@ -177,7 +177,7 @@ export default function ConversationsPage() {
                 </button>
 
                 {isOpen && (
-                  <div className="border-t border-slate-800">
+                  <div className="border-t border-edge">
                     {conv.case_status === "STOPPED" && (
                       <div className="flex items-center gap-2 border-b border-red-800 bg-red-500/10 px-5 py-2.5">
                         <span className="text-sm">🛑</span>
@@ -214,7 +214,7 @@ export default function ConversationsPage() {
                         ))
                       )}
                     </div>
-                    <div className="flex items-center justify-between border-t border-slate-800/70 bg-slate-900/50 px-5 py-2.5">
+                    <div className="flex items-center justify-between border-t border-edge bg-panel-2 px-5 py-2.5">
                       <span className="text-xs text-slate-500">
                         Started {formatDateTime(conv.created_at)} · {conv.inbound_count} replies
                       </span>
@@ -228,7 +228,7 @@ export default function ConversationsPage() {
                       )}
                     </div>
                     {conv.case_id && conv.case_status !== "STOPPED" && (
-                      <div className="border-t border-slate-800/70 px-5 py-3">
+                      <div className="border-t border-edge px-5 py-3">
                         <SimulateMessageControls
                           caseId={conv.case_id}
                           compact

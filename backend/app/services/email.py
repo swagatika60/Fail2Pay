@@ -278,18 +278,24 @@ def send_recovery_email(
         return {"status": "error", "reason": "no_email_address"}
 
     # --- Step 1.5: Hard Stop Check ---
-    from app.services.hard_stop import check_hard_stop
-    hard_stop = check_hard_stop(db, case_id, action_type="email_send")
-    if hard_stop.blocked:
-        logger.info(
-            "Email blocked by hard stop: case=%s, condition=%s",
-            case_id, hard_stop.stop_condition,
-        )
-        return {
-            "status": "blocked",
-            "reason": hard_stop.reason,
-            "stop_condition": hard_stop.stop_condition,
-        }
+    # A payment-success confirmation is deliberately exempt from the hard-stop
+    # "payment_succeeded" rule: that rule exists to stop *outreach* (reminders /
+    # retries) once a case is settled — it must not block the thank-you email that
+    # confirms the very payment that settled the case. Genuine customer opt-out is
+    # still enforced below in Step 2.
+    if email_type != EmailType.PAYMENT_SUCCESS.value:
+        from app.services.hard_stop import check_hard_stop
+        hard_stop = check_hard_stop(db, case_id, action_type="email_send")
+        if hard_stop.blocked:
+            logger.info(
+                "Email blocked by hard stop: case=%s, condition=%s",
+                case_id, hard_stop.stop_condition,
+            )
+            return {
+                "status": "blocked",
+                "reason": hard_stop.reason,
+                "stop_condition": hard_stop.stop_condition,
+            }
 
     # --- Step 2: Check opt-out ---
     if is_opted_out(db, case_id):
@@ -384,8 +390,8 @@ def _send_via_provider(
     """Send email via the configured provider.
 
     Supports:
-    1. HTTP API (e.g., SendGrid, Mailgun, Resend)
-    2. Falls back to logging if no provider configured
+    1. Resend (default) — REST API at ``EmailProviderUrl`` with a Bearer key
+    2. Falls back to logging if no API key is configured
 
     Returns:
         dict with status, message_id, and any error details
@@ -393,7 +399,7 @@ def _send_via_provider(
     settings = get_settings()
     api_key = settings.email_api_key
 
-    if not api_key:
+    if not api_key or settings.email_provider.lower() == "mock":
         logger.warning("Email API key not configured — logging email only")
         attachment_info = None
         if attachment_bytes and attachment_filename:
@@ -406,66 +412,71 @@ def _send_via_provider(
             "message_id": f"mock_{uuid.uuid4().hex[:8]}",
             "provider_response": {
                 "mock": True,
-                "reason": "no_api_key",
+                "reason": "no_api_key" if not api_key else "provider_mock",
                 "attachment": attachment_info,
             },
         }
 
-    # Send via HTTP API (generic — works with SendGrid, Mailgun, Resend, etc.)
-    # The actual API endpoint and format depends on the provider.
-    # This uses a generic REST format that most providers support.
+    provider = settings.email_provider.lower()
+    endpoint = settings.email_provider_url
+    sender = f"{settings.email_from_name} <{settings.email_from_address}>"
+
+    request_body = {
+        "from": sender,
+        "to": [to_email],
+        "subject": subject,
+        "text": body,
+    }
+
+    # Add attachment if provided (base64 encoded)
+    if attachment_bytes and attachment_filename:
+        import base64
+        request_body["attachments"] = [{
+            "filename": attachment_filename,
+            "content": base64.b64encode(attachment_bytes).decode("utf-8"),
+        }]
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
     try:
-        # Build request body
-        request_body = {
-            "to": to_email,
-            "subject": subject,
-            "text": body,
-            "from": get_settings().email_from_address,
-        }
-
-        # Add attachment if provided (base64 encoded)
-        if attachment_bytes and attachment_filename:
-            import base64
-            request_body["attachments"] = [{
-                "filename": attachment_filename,
-                "content": base64.b64encode(attachment_bytes).decode("utf-8"),
-                "type": "application/pdf",
-            }]
-
         with httpx.Client(timeout=30.0) as client:
-            response = client.post(
-                "https://api.emailprovider.com/v1/send",
-                json=request_body,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-            )
-
-        if response.status_code in (200, 201, 202):
-            resp_data = response.json()
-            message_id = resp_data.get("id", resp_data.get("message_id", ""))
-            return {
-                "status": "sent",
-                "message_id": message_id,
-                "provider_response": resp_data,
-            }
-        else:
-            error_msg = response.text
-            try:
-                error_data = response.json()
-                error_msg = error_data.get("message", error_data.get("error", response.text))
-            except Exception:
-                pass
-            return {
-                "status": "error",
-                "error": f"Provider error {response.status_code}: {error_msg}",
-            }
-
+            response = client.post(endpoint, json=request_body, headers=headers)
     except httpx.TimeoutException:
         return {"status": "error", "error": "Email provider timeout"}
     except httpx.RequestError as e:
         return {"status": "error", "error": f"Email provider request error: {str(e)}"}
+
+    if response.status_code in (200, 201, 202):
+        resp_data = response.json()
+        message_id = (
+            resp_data.get("id")
+            or resp_data.get("message_id")
+            or resp_data.get("data", {}).get("id", "")
+        )
+        return {
+            "status": "sent",
+            "message_id": message_id or f"unknown_{uuid.uuid4().hex[:8]}",
+            "provider_response": resp_data,
+        }
+
+    error_msg = response.text
+    try:
+        error_data = response.json()
+        error_msg = (
+            error_data.get("message")
+            or error_data.get("error")
+            or str(error_data.get("errors", response.text))
+        )
+    except Exception:
+        pass
+
+    return {
+        "status": "error",
+        "error": f"Provider error {response.status_code}: {error_msg}",
+    }
 
 
 def get_email_history(db: Session, case_id: uuid.UUID) -> list[dict]:
