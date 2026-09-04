@@ -15,6 +15,7 @@ import {
   YAxis,
 } from "recharts"
 import type { CSSProperties } from "react"
+import { CalendarDays, Handshake, Radio } from "lucide-react"
 import { useDashboardStore } from "../hooks/dashboardStore"
 import { PageHeader } from "../components/ui/PageHeader"
 import { Card, CardHeader } from "../components/ui/Card"
@@ -176,7 +177,7 @@ export default function AnalyticsPage() {
         <Card className="p-6">
           <CardHeader title="Payment plan recovery" subtitle="Installment revenue agreed and collected." />
           {plan.plans_count === 0 ? (
-            <EmptyState icon="📅" title="No payment plans" description="Plans created during recovery appear here." />
+            <EmptyState icon={CalendarDays} title="No payment plans" description="Plans created during recovery appear here." />
           ) : (
             <>
               <div className="grid grid-cols-2 gap-3">
@@ -196,7 +197,7 @@ export default function AnalyticsPage() {
         <Card className="p-6">
           <CardHeader title="Promise-to-pay recovery" subtitle="Promises made vs. cash collected." />
           {promise.promised_cases === 0 ? (
-            <EmptyState icon="🤝" title="No promises" description="Customer payment promises appear here." />
+            <EmptyState icon={Handshake} title="No promises" description="Customer payment promises appear here." />
           ) : (
             <>
               <div className="grid grid-cols-2 gap-3">
@@ -217,7 +218,7 @@ export default function AnalyticsPage() {
       <Card className="p-6">
         <CardHeader title="Recovery by channel" subtitle="How collected money came back to you." />
         {map.recovery_by_channel.length === 0 ? (
-          <EmptyState icon="📡" title="No channel data" description="Channel attribution appears once payments are captured." />
+          <EmptyState icon={Radio} title="No channel data" description="Channel attribution appears once payments are captured." />
         ) : (
           <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
             <div className="h-56">

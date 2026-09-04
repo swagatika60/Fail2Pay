@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 import { useParams, Link } from "react-router-dom"
+import { AlertTriangle, Ban, CheckCircle2, CreditCard } from "lucide-react"
 import {
   createRazorpayOrder,
   simulateCustomerMessage,
@@ -128,8 +129,8 @@ export default function PayNowPage() {
 
         {stage === "ready" && (
           <>
-            <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-accent-soft text-3xl">
-              💳
+            <div className="mx-auto mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-accent-soft">
+              <CreditCard className="h-7 w-7 text-accent" />
             </div>
             <h1 className="text-xl font-bold text-slate-100">
               {detail?.customer_name
@@ -172,8 +173,12 @@ export default function PayNowPage() {
 
         {stage === "done" && (
           <>
-            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500/20 text-3xl">
-              {recovered ? "✅" : "⚠️"}
+            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500/20">
+              {recovered ? (
+                <CheckCircle2 className="h-7 w-7 text-emerald-400" />
+              ) : (
+                <AlertTriangle className="h-7 w-7 text-amber-400" />
+              )}
             </div>
             <h1 className="text-xl font-bold text-slate-100">
               {recovered ? "Payment Received" : "Action Needed"}
@@ -184,8 +189,8 @@ export default function PayNowPage() {
 
         {stage === "error" && (
           <>
-            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-red-500/20 text-3xl">
-              🚫
+            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-red-500/20">
+              <Ban className="h-7 w-7 text-red-400" />
             </div>
             <h1 className="text-xl font-bold text-red-400">Payment Failed</h1>
             <p className="mt-3 text-sm text-slate-400">{message}</p>

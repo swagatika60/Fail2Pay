@@ -29,7 +29,7 @@ Architecture:
 
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
@@ -37,14 +37,10 @@ from app.config import get_settings
 from app.crud.audit_event import create_audit_event
 from app.crud.customer import get_customer
 from app.crud.promise import (
-    get_active_promise_for_case,
-    get_promise,
     get_promises_by_case,
-    mark_promise_missed,
     count_promises_by_status,
 )
 from app.crud.recovery_case import get_recovery_case
-from app.models.audit_event import AuditEvent
 from app.models.promise import Promise, PromiseStatus
 from app.models.recovery_case import RecoveryStatus
 from app.schemas.audit_event import AuditEventCreate

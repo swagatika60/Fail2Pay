@@ -14,13 +14,15 @@ REMINDER_SEQUENCE_MAX_LEN = 8
 REMINDER_MIN_GAP_HOURS = 2
 MIN_REMINDER_HOURS = 1
 
-DEFAULT_REMINDER_SEQUENCE = [4, 8, 16, 24, 48]
+# Spec no-response cadence (hours after the initial message):
+# T+2h → T+4h → T+8h → T+16h → T+24h → T+36h → T+48h → STOP
+DEFAULT_REMINDER_SEQUENCE = [2, 4, 8, 16, 24, 36, 48]
 
 
 class RecoverySettingsUpdate(BaseModel):
     """Body accepted by ``PUT /api/settings/recovery``."""
 
-    max_recovery_attempts: int = Field(5, ge=1, le=MAX_RECOVERY_ATTEMPTS_CAP)
+    max_recovery_attempts: int = Field(8, ge=1, le=MAX_RECOVERY_ATTEMPTS_CAP)
     recovery_window_days: int = Field(14, ge=1, le=RECOVERY_WINDOW_DAYS_CAP)
     whatsapp_enabled: bool = True
     email_enabled: bool = True

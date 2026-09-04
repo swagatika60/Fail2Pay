@@ -1,3 +1,11 @@
+import type { ComponentType } from "react"
+import {
+  Ban,
+  CheckCircle2,
+  Clock3,
+  Hourglass,
+  XCircle,
+} from "lucide-react"
 import type { PaymentPromise } from "../../types/analytics"
 import { formatCurrency } from "./MetricCard"
 
@@ -5,13 +13,16 @@ interface PromiseTimelineProps {
   promises: PaymentPromise[]
 }
 
-const STATUS_STYLES: Record<string, { bg: string; text: string; icon: string }> = {
-  ACTIVE: { bg: "bg-blue-500/20", text: "text-blue-400", icon: "⏳" },
-  FULFILLED: { bg: "bg-green-500/20", text: "text-green-400", icon: "✅" },
-  MISSED: { bg: "bg-amber-500/20", text: "text-amber-400", icon: "⏰" },
-  BROKEN: { bg: "bg-red-500/20", text: "text-red-400", icon: "❌" },
-  CANCELLED: { bg: "bg-gray-500/20", text: "text-gray-400", icon: "🚫" },
-  EXPIRED: { bg: "bg-gray-500/20", text: "text-gray-400", icon: "⌛" },
+const STATUS_STYLES: Record<
+  string,
+  { bg: string; text: string; icon: ComponentType<{ className?: string }> }
+> = {
+  ACTIVE: { bg: "bg-blue-500/20", text: "text-blue-400", icon: Clock3 },
+  FULFILLED: { bg: "bg-green-500/20", text: "text-green-400", icon: CheckCircle2 },
+  MISSED: { bg: "bg-amber-500/20", text: "text-amber-400", icon: Clock3 },
+  BROKEN: { bg: "bg-red-500/20", text: "text-red-400", icon: XCircle },
+  CANCELLED: { bg: "bg-gray-500/20", text: "text-gray-400", icon: Ban },
+  EXPIRED: { bg: "bg-gray-500/20", text: "text-gray-400", icon: Hourglass },
 }
 
 function formatDateTime(dateStr: string | null): string {
@@ -48,7 +59,7 @@ export default function PromiseTimeline({ promises }: PromiseTimelineProps) {
                 <span
                   className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium ${style.bg} ${style.text}`}
                 >
-                  {style.icon} {p.status}
+                  <style.icon className="h-3.5 w-3.5" /> {p.status}
                 </span>
                 <span className="text-sm font-semibold text-slate-200">
                   {formatCurrency(p.amount_promised)}

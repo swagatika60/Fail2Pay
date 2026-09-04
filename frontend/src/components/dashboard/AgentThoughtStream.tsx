@@ -8,7 +8,7 @@ import type { LiveAgentStep } from "../../services/realtime"
  * engine produced for a case:
  *
  *   [Trigger Received] → [Root Cause: …] → [Policy Check: …] →
- *   [Action Dispatched] → [Ledger Verified ★]
+ *   [Action Dispatched] → [Ledger Verified]
  *
  * Steps are merged from the persisted chain (fetched with the case detail) and
  * the live WebSocket stream (deduped by step_id), so the feed stays correct

@@ -1,3 +1,12 @@
+import type { ComponentType } from "react"
+import {
+  AlertTriangle,
+  Ban,
+  CalendarDays,
+  CheckCircle2,
+  Clock3,
+  XCircle,
+} from "lucide-react"
 import type { PaymentPlan } from "../../types/analytics"
 import { formatCurrency } from "./MetricCard"
 
@@ -14,13 +23,16 @@ const STATUS_STYLES: Record<string, { bg: string; text: string }> = {
   DEFAULTED: { bg: "bg-red-500/20", text: "text-red-400" },
 }
 
-const INST_STATUS_STYLES: Record<string, { bg: string; text: string; icon: string }> = {
-  SCHEDULED: { bg: "bg-slate-600/30", text: "text-slate-400", icon: "📅" },
-  DUE: { bg: "bg-amber-500/20", text: "text-amber-400", icon: "⏰" },
-  PAID: { bg: "bg-green-500/20", text: "text-green-400", icon: "✅" },
-  FAILED: { bg: "bg-red-500/20", text: "text-red-400", icon: "❌" },
-  OVERDUE: { bg: "bg-red-500/20", text: "text-red-400", icon: "🚨" },
-  CANCELLED: { bg: "bg-gray-500/20", text: "text-gray-400", icon: "🚫" },
+const INST_STATUS_STYLES: Record<
+  string,
+  { bg: string; text: string; icon: ComponentType<{ className?: string }> }
+> = {
+  SCHEDULED: { bg: "bg-slate-600/30", text: "text-slate-400", icon: CalendarDays },
+  DUE: { bg: "bg-amber-500/20", text: "text-amber-400", icon: Clock3 },
+  PAID: { bg: "bg-green-500/20", text: "text-green-400", icon: CheckCircle2 },
+  FAILED: { bg: "bg-red-500/20", text: "text-red-400", icon: XCircle },
+  OVERDUE: { bg: "bg-red-500/20", text: "text-red-400", icon: AlertTriangle },
+  CANCELLED: { bg: "bg-gray-500/20", text: "text-gray-400", icon: Ban },
 }
 
 function formatDateTime(dateStr: string | null): string {
@@ -132,7 +144,7 @@ export default function PaymentPlanView({ plans }: PaymentPlanViewProps) {
                           <span
                             className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 ${instStyle.bg} ${instStyle.text}`}
                           >
-                            {instStyle.icon} {inst.status}
+                            <instStyle.icon className="h-3.5 w-3.5" /> {inst.status}
                           </span>
                         </div>
                         <div className="flex items-center gap-3 text-slate-500">

@@ -13,6 +13,7 @@ import {
   fetchRevenueMap,
   fetchRevenueSummary,
   fetchRecoveryCases,
+  simulateSingleCase,
 } from "../services/analytics"
 
 const STALE_MS = 1000 * 60 * 5
@@ -31,7 +32,7 @@ interface DashboardStoreValue {
   error: string | null
   ensureLoaded: () => Promise<void>
   invalidate: () => void
-  simulatePaymentFailure: (amount: number) => void
+  simulatePaymentFailure: (amount: number) => Promise<string | null>
 }
 
 const DashboardStoreContext = createContext<DashboardStoreValue | null>(null)
@@ -155,47 +156,70 @@ export function DashboardStoreProvider({ children }: { children: ReactNode }) {
     ensureLoaded()
   }, [ensureLoaded])
 
-  // Inject a simulated Razorpay `payment.failed` webhook into the live state.
-  const simulatePaymentFailure = useCallback((amount: number) => {
-    const names = [
-      "Rahul Verma",
-      "Priya Nair",
-      "Amit Sharma",
-      "Sneha Reddy",
-      "Karan Mehta",
-      "Ananya Iyer",
-      "Vikram Singh",
-      "Divya Patel",
-    ]
-    const customerName = names[Math.floor(Math.random() * names.length)]
-    const now = new Date()
-    const id =
-      typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID()
-        : `mock-webhook-${Date.now()}`
-    const mockCase: RecoveryCaseSummary = {
-      id,
-      customer_name: customerName,
-      customer_email: null,
-      original_amount: amount,
-      risk_level: "HIGH",
-      status: "AT_RISK",
-      recovered_amount: 0,
-      remaining_amount: amount,
-      attempt_count: 0,
-      created_at: now.toISOString(),
-      updated_at: now.toISOString(),
+  // Create a real persisted case via the backend API.
+  // Returns the case_id so the caller can navigate to /case/{id}.
+  const simulatePaymentFailure = useCallback(async (amount: number) => {
+    try {
+      const result = await simulateSingleCase({ amount })
+      // Refresh the cases list so the new case appears immediately
+      const freshCases = await fetchRecoveryCases()
+      cacheRef.current.cases = { data: freshCases, fetchedAt: Date.now() }
+      setCases(freshCases)
+      // Refresh revenue map + summary to reflect the new at-risk revenue
+      const [freshMap, freshSummary] = await Promise.all([
+        fetchRevenueMap(),
+        fetchRevenueSummary(),
+      ])
+      cacheRef.current.map = { data: freshMap, fetchedAt: Date.now() }
+      cacheRef.current.summary = { data: freshSummary, fetchedAt: Date.now() }
+      setMap(freshMap)
+      setSummary(freshSummary)
+      return result.case_id
+    } catch (err) {
+      console.error("[Dashboard] Failed to create simulated case:", err)
+      // Fallback: if backend is unreachable, add a client-side mock so
+      // the UI at least shows something. The mock won't survive a
+      // refresh — but it's better than nothing.
+      const names = [
+        "Rahul Verma",
+        "Priya Nair",
+        "Amit Sharma",
+        "Sneha Reddy",
+        "Karan Mehta",
+        "Ananya Iyer",
+        "Vikram Singh",
+        "Divya Patel",
+      ]
+      const customerName = names[Math.floor(Math.random() * names.length)]
+      const now = new Date()
+      const id =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `mock-webhook-${Date.now()}`
+      const mockCase: RecoveryCaseSummary = {
+        id,
+        customer_name: customerName,
+        customer_email: null,
+        original_amount: amount,
+        risk_level: "HIGH",
+        status: "AT_RISK",
+        recovered_amount: 0,
+        remaining_amount: amount,
+        attempt_count: 0,
+        created_at: now.toISOString(),
+        updated_at: now.toISOString(),
+      }
+      setCases((prev) => [mockCase, ...prev])
+      setMap((prev) =>
+        prev ? { ...prev, at_risk_revenue: prev.at_risk_revenue + amount } : prev,
+      )
+      setSummary((prev) =>
+        prev
+          ? { ...prev, revenue_at_risk: prev.revenue_at_risk + amount }
+          : prev,
+      )
+      return null
     }
-
-    setCases((prev) => [mockCase, ...prev])
-    setMap((prev) =>
-      prev ? { ...prev, at_risk_revenue: prev.at_risk_revenue + amount } : prev,
-    )
-    setSummary((prev) =>
-      prev
-        ? { ...prev, revenue_at_risk: prev.revenue_at_risk + amount }
-        : prev,
-    )
   }, [])
 
   const value = useMemo<DashboardStoreValue>(

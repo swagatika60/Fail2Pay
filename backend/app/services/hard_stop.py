@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.crud.audit_event import create_audit_event
-from app.crud.recovery_case import get_recovery_case, update_recovery_case_status
+from app.crud.recovery_case import get_recovery_case
 from app.crud.scheduled_action import cancel_pending_actions_for_case
 from app.models.recovery_case import RecoveryCase, RecoveryStatus
 from app.schemas.audit_event import AuditEventCreate
@@ -344,8 +344,7 @@ def _check_conflicting_action(db: Session, case: RecoveryCase) -> bool:
 
     Checks for duplicate action types that are already pending.
     """
-    from app.models.scheduled_action import ScheduledAction
-    from sqlalchemy import select, func
+    from sqlalchemy import select
 
     # Count pending actions of any type — if one exists, don't schedule another of the same
     # This is checked at the action level, not globally.

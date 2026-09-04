@@ -265,6 +265,38 @@ def parse_nested_split(text: str) -> dict | None:
     }
 
 
+# A customer-named amount in free text ("₹2,000", "2000", "2000 rs").
+_AMOUNT_IN_TEXT_RE = re.compile(
+    r"(?:\u20b9|inr|rs\.?|rupees?)?\s*(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?\s*"
+    r"(?:\u20b9|inr|rs\.?|rupees?)?",
+    re.IGNORECASE,
+)
+
+
+def extract_partial_amount(text: str | None, remaining_paise: int | None) -> int | None:
+    """Parse the amount a customer names in free text ("I can pay 2000 today").
+
+    Returns paise only when the amount is a plausible *partial* payment
+    (0 < amount < remaining). Equal-to-balance amounts are not "partial", and
+    anything larger is treated as not-a-payment-amount. Deterministic — no AI.
+    """
+    if not text or remaining_paise is None or remaining_paise <= 0:
+        return None
+    m = _AMOUNT_IN_TEXT_RE.search(text)
+    if not m:
+        return None
+    try:
+        rupees = int(m.group(1).replace(",", ""))
+        paise_digits = m.group(2) or ""
+        paise = int((paise_digits + "00")[:2]) if paise_digits else 0
+        amount_paise = rupees * 100 + paise
+    except (ValueError, TypeError):
+        return None
+    if amount_paise <= 0 or amount_paise >= remaining_paise:
+        return None
+    return amount_paise
+
+
 @lru_cache(maxsize=128)
 def _split_summary_cached(total_amount: int, count: int) -> tuple:
     """Cached core computation for split_summary. Returns a tuple (hashable)."""
@@ -1202,6 +1234,80 @@ def build_reply(
     split_label_fn = lambda c: f"{c} Kishton mein baantein" if hinglish else f"Split in {c} EMIs"
     split_breakdown_text = ""
 
+    # --- Partial-payment turn ("I can pay ₹2,000 today") ---
+    # The customer names an amount they can send NOW. Acknowledge exactly that
+    # amount on the card/CTA, never claim the full balance is being settled,
+    # and offer to split the remainder or pay later. Deterministic parse only.
+    partial_paise = (
+        extract_partial_amount(customer_message, amount_paise)
+        if customer_message and intent == "PAY_NOW"
+        else None
+    )
+    if partial_paise is not None:
+        partial_due = format_amount(partial_paise)
+        remaining_due = format_amount(amount_paise)
+        if hinglish:
+            partial_text = (
+                f"{ack}, {name}{ji}! Bilkul — aap aaj {partial_due} bhej sakte "
+                f"hain. Yeh raha aapka payment link:\n{url}\n\n"
+                f"Baaki {remaining_due} ke liye aap split kar sakte hain ya baad "
+                f"mein pay kar sakte hain."
+            )
+        else:
+            partial_text = (
+                f"{ack}, {name}{ji}! You can pay {partial_due} today — here is "
+                f"your payment link:\n{url}\n\n"
+                f"Would you like to split the remaining {remaining_due} into "
+                f"installments, or pay it later?"
+            )
+        partial_replies = [
+            _p("pay_now", labels["pay_now"].format(due=partial_due)),
+            _p("split_2", labels["split_2"]),
+            _p("pay_later", labels["pay_later"]),
+            _p("support", labels["support"]),
+        ]
+        partial_replies.append(
+            {"id": "language_hi", "label": "\u0939\u093f\u0902\u0926\u0940 / Hinglish"}
+        )
+        partial_replies.append({"id": "language_en", "label": "English"})
+        partial_sentiment = assess_sentiment(customer_message)
+        return {
+            "payload_type": "whatsapp",
+            "text": partial_text,
+            "language_options": [
+                {"code": "en", "label": "English"},
+                {"code": "hi", "label": "\u0939\u093f\u0902\u0926\u0940 / Hinglish"},
+            ],
+            "intent": intent,
+            "recovered": False,
+            "quick_replies": partial_replies,
+            "split_options": [],
+            "payment_card": {
+                "amount": partial_paise,
+                "amount_formatted": partial_due,
+                "invoice_id": inv,
+                "gateway": GATEWAY_LABEL,
+                "url": url,
+                "label": f"Pay {partial_due} securely",
+                "installment": False,
+                "remaining_amount": amount_paise,
+                "remaining_amount_formatted": remaining_due,
+            },
+            "installment_breakdown": None,
+            "payment_plan": None,
+            "policy_action": {
+                "increment_attempt_counter": False,
+                "next_state": "ENGAGED",
+            },
+            "thought_process": (
+                f"Customer can pay {partial_due} today (of {remaining_due} due) — "
+                "offering a partial payment now plus split/pay-later options."
+            ),
+            "sentiment_assessment": partial_sentiment,
+            "proposed_action": "send_payment_link",
+            "recommended_channel": "WhatsApp",
+        }
+
     # --- Intent-specific edge cases (before template resolution) ---
     # Map Recovery Specialist intents to legacy processing paths
     _plan_intent = intent in ("PAYMENT_PLAN_REQUEST", "SPLIT_EMI")
@@ -1256,7 +1362,7 @@ def build_reply(
             text = tmpl.text.format(
                 name=name, ji=ji, url=url, due=due_amount,
                 promise_label=_promise_date_label(promise_at),
-                monitor_note=monitor_note, ack="", repeat="", escalate="",
+                monitor_note=monitor_note, ack=ack, repeat="", escalate="",
                 link_line="", split_breakdown="", split_label="",
             )
             quick_replies = [
@@ -2092,7 +2198,6 @@ def build_reasoning_steps(
     and persisted to the audit trail.
     """
     from datetime import datetime, timezone
-    from app.services.root_cause import classify_root_cause
 
     steps = []
     now = datetime.now(timezone.utc)
@@ -2267,7 +2372,6 @@ def handle_incoming_message(
             "PAY_NOW", "SPLIT_EMI", "PAY_LATER",
         )
         if case.status == RecoveryStatus.STOPPED and intent in payment_intents:
-            from app.services.workflow_engine import start_recovery
             case.status = RecoveryStatus.RECOVERY_IN_PROGRESS
             case.closed_at = None
             extra = dict(case.extra_data or {})

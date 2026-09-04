@@ -8,13 +8,12 @@ import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.audit_event import AuditEvent
 from app.models.customer import Customer
-from app.models.recovery_case import RecoveryCase, RecoveryStatus
+from app.models.recovery_case import RecoveryCase
 from app.models.revenue_event import RevenueEvent
 from app.schemas.analytics import (
     RecoveryCaseDetail,

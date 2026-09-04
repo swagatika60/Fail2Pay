@@ -3,17 +3,21 @@
 Professional, non-threatening templates for each stage of the recovery process.
 Every message is logged and tracked. No messages are sent repeatedly without variation.
 
-Template stages:
-1. initial_payment_failed — first contact after payment failure
-2. reminder_1 — gentle reminder after 4 hours
-3. reminder_2 — follow-up after 12 hours
-4. final_notice — final attempt after 28 hours
+Template stages (spec no-response cadence, absolute from T0):
+1. initial_payment_failed — first contact after payment failure (T+0)
+2. reminder_1 — gentle reminder after 2 hours
+3. reminder_2 — follow-up after 4 hours
+4. reminder_3 — follow-up after 8 hours
+5. reminder_4 — follow-up after 16 hours
+6. reminder_5 — follow-up after 24 hours
+7. reminder_6 — follow-up after 36 hours
+8. final_notice — final attempt at the 48-hour mark, then STOP
 
 Rules:
 - Messages must NEVER be threatening, misleading, or aggressive
 - Each message includes a payment link for easy recovery
 - Messages are personalized with customer name and amount
-- No duplicate messages are sent without at least 4 hours gap
+- No duplicate messages are sent without at least 2 hours gap
 """
 
 import logging
@@ -70,6 +74,8 @@ TEMPLATES = {
             "Your payment of {amount} could not be completed. "
             "This might be due to insufficient funds, an expired card, or a bank issue.\n\n"
             "You can retry your payment here: {payment_link}\n\n"
+            "Would you like to try again, split the payment into installments, "
+            "or set up a payment plan? Just reply here and we'll set it up.\n\n"
             "If you've already paid, please ignore this message.\n\n"
             "Need help? Reply to this message and we'll assist you."
         ),
@@ -93,6 +99,48 @@ TEMPLATES = {
             "We understand things come up — no worries.\n\n"
             "You can retry here: {payment_link}\n\n"
             "If you need a payment plan or have questions, just reply to this message."
+        ),
+    ),
+    "reminder_3": MessageTemplate(
+        stage="reminder_3",
+        channel="whatsapp",
+        body=(
+            "Hi {customer_name},\n\n"
+            "Just checking in — your payment of {amount} is still pending.\n\n"
+            "You can complete it here: {payment_link}\n\n"
+            "Prefer to split it into installments or pay later? Reply here and we'll set it up."
+        ),
+    ),
+    "reminder_4": MessageTemplate(
+        stage="reminder_4",
+        channel="whatsapp",
+        body=(
+            "Hi {customer_name},\n\n"
+            "Your payment of {amount} is still outstanding. No pressure — "
+            "we're here to help you sort it out.\n\n"
+            "You can pay now: {payment_link}\n\n"
+            "Or reply with a date that works for you, and we'll pause follow-ups until then."
+        ),
+    ),
+    "reminder_5": MessageTemplate(
+        stage="reminder_5",
+        channel="whatsapp",
+        body=(
+            "Hi {customer_name},\n\n"
+            "A friendly check-in: your payment of {amount} remains pending.\n\n"
+            "Complete it here: {payment_link}\n\n"
+            "If you'd like a payment plan or need support, just reply to this message."
+        ),
+    ),
+    "reminder_6": MessageTemplate(
+        stage="reminder_6",
+        channel="whatsapp",
+        body=(
+            "Hi {customer_name},\n\n"
+            "We still haven't received your payment of {amount}. "
+            "We'd love to resolve this with you.\n\n"
+            "Please complete your payment here: {payment_link}\n\n"
+            "Or reply and we'll find a solution together."
         ),
     ),
     "final_notice": MessageTemplate(
@@ -124,6 +172,7 @@ def render_message(
     payment_link: str,
     channel: str = "whatsapp",
     language: str = "en",
+    failure_reason: str | None = None,
 ) -> MessageTemplate | None:
     """Render a message template with customer-specific data.
 
@@ -134,6 +183,8 @@ def render_message(
         payment_link: Link to the payment page
         channel: Communication channel
         language: Language code
+        failure_reason: When provided, the first-contact template names the actual
+            gateway reason instead of the generic possible-causes sentence.
 
     Returns:
         Rendered MessageTemplate or None if template not found
@@ -151,6 +202,18 @@ def render_message(
         payment_link=payment_link,
     )
 
+    reason = (failure_reason or "").strip()
+    if reason and template.stage == "initial_payment_failed":
+        # Name the real failure reason when the gateway told us (deterministic
+        # template surgery — never invented copy).
+        generic_cause = (
+            "This might be due to insufficient funds, an expired card, or a bank issue."
+        )
+        rendered_body = rendered_body.replace(
+            generic_cause,
+            f"The payment attempt was declined — {reason}.",
+        )
+
     return MessageTemplate(
         stage=template.stage,
         channel=template.channel,
@@ -163,20 +226,31 @@ def render_message(
 def get_template_for_attempt(attempt_number: int) -> str:
     """Get the appropriate template stage based on attempt number.
 
-    Attempt mapping:
-    1 → initial_payment_failed
-    2 → reminder_1
-    3 → reminder_2
-    4+ → final_notice
+    Matches the spec no-response cadence (absolute from T0):
+    1 → initial_payment_failed   (T+0)
+    2 → reminder_1               (T+2h)
+    3 → reminder_2               (T+4h)
+    4 → reminder_3               (T+8h)
+    5 → reminder_4               (T+16h)
+    6 → reminder_5               (T+24h)
+    7 → reminder_6               (T+36h)
+    8+ → final_notice            (T+48h, then STOP)
     """
     if attempt_number <= 1:
         return "initial_payment_failed"
-    elif attempt_number == 2:
+    if attempt_number == 2:
         return "reminder_1"
-    elif attempt_number == 3:
+    if attempt_number == 3:
         return "reminder_2"
-    else:
-        return "final_notice"
+    if attempt_number == 4:
+        return "reminder_3"
+    if attempt_number == 5:
+        return "reminder_4"
+    if attempt_number == 6:
+        return "reminder_5"
+    if attempt_number == 7:
+        return "reminder_6"
+    return "final_notice"
 
 
 def get_payment_link(base_url: str | None = None, case_id: str = "") -> str:

@@ -34,17 +34,14 @@ from app.crud.payment_plan import (
     create_payment_plan,
     get_active_plan_for_case,
     get_payment_plan,
-    get_plans_by_case,
     accept_plan,
     activate_plan,
     update_plan_status,
     create_installment,
     get_installment,
     get_installments_for_plan,
-    get_next_due_installment,
     mark_installment_paid,
     mark_installment_failed,
-    count_installments_by_status,
 )
 from app.crud.recovery_case import get_recovery_case
 from app.models.payment_plan import PaymentPlanStatus
@@ -585,8 +582,6 @@ def _create_razorpay_subscription(db, plan, case):
 
 def _create_installment_recovery(db, installment):
     """Create bounded recovery case for a failed installment."""
-    from app.crud.recovery_case import create_recovery_case
-    from app.schemas.recovery_case import RecoveryCaseCreate
 
     if not installment.recovery_case_id:
         return

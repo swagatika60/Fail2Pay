@@ -40,6 +40,7 @@ class LanguagePatterns:
     already_paid: list[str] = field(default_factory=list)
     negative: list[str] = field(default_factory=list)
     promise_to_pay: list[str] = field(default_factory=list)
+    pay_now: list[str] = field(default_factory=list)
     payment_retry: list[str] = field(default_factory=list)
     payment_link: list[str] = field(default_factory=list)
     invoice: list[str] = field(default_factory=list)
@@ -55,6 +56,14 @@ PATTERNS: dict[str, LanguagePatterns] = {
         stop=[
             r"\bstop\b", r"\bunsubscribe\b", r"\bdon'?t\s*contact\b",
             r"\bleave\s*me\s*alone\b", r"\bdo\s*not\s*call\b",
+            r"\bdon'?t\s*message\b", r"\bdo\s*not\s*message\b",
+            r"\bdon'?t\s*text\b",
+            r"\bstop\s*(messaging|contacting|texting|sending|calling|reminders?|messages?|notifications?)\b",
+            r"\bdon'?t\s*send(ing)?\s*(me\s*)?(any\s*)?(more\s*)?(reminders?|messages?|updates?|alerts?)\b",
+            r"\bdo\s*not\s*send(ing)?\s*(me\s*)?(any\s*)?(more\s*)?(reminders?|messages?|updates?|alerts?)\b",
+            r"\bno\s*more\s*(messages?|reminders?|updates?|calls?|alerts?)\b",
+            r"\bstop\s*(the\s*)?(payment\s*)?reminders?\b",
+            r"\bdon'?t\s*want\s*(any\s*)?(more\s*)?(reminders?|messages?|updates?)\b",
         ],
         already_paid=[
             r"\balready\s*paid\b", r"\bpayment\s*(is\s*)?done\b",
@@ -64,6 +73,7 @@ PATTERNS: dict[str, LanguagePatterns] = {
         negative=[
             r"\bnot\s*paying\b", r"\bwill\s*not\s*pay\b", r"\bwon'?t\s*pay\b",
             r"\brefuse\b", r"\bfraud\b", r"\bscam\b",
+            r"\bnot\s*interested\b", r"\bno\s*thanks\b",
         ],
         promise_to_pay=[
             r"\bi'?ll\s*pay\b", r"\bwill\s*pay\b", r"\bpromise\b",
@@ -73,9 +83,23 @@ PATTERNS: dict[str, LanguagePatterns] = {
             r"\b(need|want|give)\s*\d+\s*days?\b",
             r"\bsure\s*i\s*will\b", r"\bdefinitely\b", r"\bpaying\b",
         ],
+        pay_now=[
+            r"\bpay\s*now\b", r"\bpaying\s*now\b", r"\bpay\s*right\s*now\b",
+            r"\bwant\s*to\s*pay\s*now\b", r"\bwill\s*pay\s*now\b",
+            r"\b(can|could)\s*pay\b.*\b(today|now)\b",
+            r"\bwill\s*pay\b.*\b(today|now)\b",
+        ],
         payment_retry=[
             r"\bretry\b", r"\btry\s*(again|paying)\b", r"\battempt\s*(again|payment)\b",
             r"\bre\s*pay\b", r"\bpay\s*again\b", r"\bredo\s*payment\b",
+            r"\bpayment\s*fail(?:ed|ure)?\b", r"\bpayment\s*(didn'?t|did\s*not)\s*(go|work)\b",
+        ],
+        support=[
+            r"\btalk\s*to\s*(support|human|agent|someone)\b",
+            r"\bhuman\s*(agent|support|representative)\b",
+            r"\bcustomer\s*service\b", r"\bspeak\s*to\s*(someone|a\s*person)\b",
+            r"\bhelp\s*from\s*(a\s*)?(human|person|agent)\b",
+            r"\bneed\s*help\b",
         ],
         payment_link=[
             r"\b(send|share|give)\b.*\blink\b", r"\bpayment\s*link\b",
@@ -91,16 +115,13 @@ PATTERNS: dict[str, LanguagePatterns] = {
             r"\bpay(?:ing)?\s*(?:a\s*)?part\s*\d+\b",
             r"\bpart\s*\d+\b.*\bin\s*\d+\s*installments?\b",
             r"\bnow\s*in\s*\d+\s*installments?\b",
+            r"\bdon'?t\s*have\s*(the\s*)?full\s*(amount|balance)\b",
+            r"\b(can'?t|cannot|can\s*not)\s*pay\s*(the\s*)?full\s*(amount|balance)\b",
+            r"\bnot\s*able\b.*\bpay\s*(the\s*)?full\b",
         ],
         question=[
             r"\?$", r"\bwhy\b", r"\bwhat\b", r"\bhow\b", r"\bwhen\b",
             r"\bwhere\b", r"\bwho\b", r"\bcan\s*you\b", r"\bcould\s*you\b",
-        ],
-        support=[
-            r"\btalk\s*to\s*(support|human|agent|someone)\b",
-            r"\bhuman\s*(agent|support|representative)\b",
-            r"\bcustomer\s*service\b", r"\bspeak\s*to\s*(someone|a\s*person)\b",
-            r"\bhelp\s*from\s*(a\s*)?(human|person|agent)\b",
         ],
     ),
     "hi": LanguagePatterns(
@@ -110,6 +131,10 @@ PATTERNS: dict[str, LanguagePatterns] = {
             r"\u092E\u0947\u0938\u0947\u091C\b",  # मेसेज (message)
             r"\u092C\u0902\u0926\s*\u0928\u0939\u0940\u0902",  # बंद नहीं (don't stop)
             r"\u0938\u0902\u092A\u0930\u094D\u0915\b", r"\u092E\u0938\u093E\u091C\u094D",  # संपर्क (contact)
+            r"\u092E\u0924\s*\u092D\u0947\u091C\u094B",  # मत भेजो (don't send)
+            r"\u092E\u0924\s*\u0915\u0930\u094B",  # मत करो (don't do it)
+            r"\u092C\u0902\u0926\s*\u0915\u0930\u094B",  # बंद करो (stop)
+            r"\u0930\u093F\u092E\u093E\u0907\u0902\u0921\u0930\s*\u092E\u0924\s*\u092D\u0947\u091C\u094B",  # रिमाइंडर मत भेजो
         ],
         already_paid=[
             r"\u092A\u0948\u0938\u093E\s*\u092D\u0930\s*\u091A\u0941\u0915\u093E",  # पैसा भर चुका
@@ -130,6 +155,9 @@ PATTERNS: dict[str, LanguagePatterns] = {
             r"\u092A\u0915\u094D\u0915\u093E",  # पक्का (sure)
             r"\u091C\u0930\u0942\u0930",  # जरूर (definitely)
             r"\u092E\u0948\u0902\s*\u0915\u0930\u0942\u0902\u0917\u093E",  # मैं करूंगा
+        ],
+        pay_now=[
+            r"\u0905\u092D\u0940\s*\u092D\u0941\u0917\u0924\u093E\u0928",  # अभी भुगतान
         ],
         payment_retry=[
             r"\u092B\u093F\u0930\s*\u0938\u0947\s*\u092A\u0947\u092F\u093C\u0947\u0902\u0917\u0947",  # फिर से पेयेंगे
@@ -159,12 +187,19 @@ PATTERNS: dict[str, LanguagePatterns] = {
             r"\u0915\u0939\u093E\u0902",  # कहां
             r"\u0915\u092C",  # कब
         ],
+        support=[
+            r"\u092E\u0926\u0926",  # मदद
+        ],
     ),
     "hi-en": LanguagePatterns(
         # Hinglish (Roman script with Hindi words)
         stop=[
             r"\bstop\b", r"\bband\s*karo\b", r"\bmess mat\s*karo\b",
             r"\bcontact\s*mat\s*karo\b", r"\bmessage\s*mat\s*bhejo\b",
+            r"\bmat\s*bhejo\b", r"\bmat\s*karo\b", r"\bstop\s*karo\b",
+            r"\breminders?\s*(mat\s*bhejo|band\s*karo|mat\s*karo)\b",
+            r"\bno\s*more\s*(messages?|reminders?|calls?)\b",
+            r"\bdon'?t\s*send(ing)?\s*(me\s*)?(reminders?|messages?|updates?)\b",
         ],
         already_paid=[
             r"\bpaisa\s*bhar\s*chuka\b", r"\bpayment\s*ho\s*giya\b",
@@ -173,6 +208,7 @@ PATTERNS: dict[str, LanguagePatterns] = {
         negative=[
             r"\bnahi\s*dunga\b", r"\bnahi\s*pay\s*karo*unga\b",
             r"\bpaisa\s*nahi\b", r"\bfraud\b", r"\bscam\b",
+            r"\bnot\s*interested\b",
         ],
         promise_to_pay=[
             r"\bkal\b.*\b(karo*unga|de\s*dunga|pay\s*karo*unga|kar\s*dunga)\b", r"\bkal\s*de\s*dunga\b",
@@ -181,9 +217,14 @@ PATTERNS: dict[str, LanguagePatterns] = {
             r"\bpay\s*later\b", r"\blater\s*mein\b",
             r"\bpay\s*in\s*\d+\s*days?\b", r"\b(need|want)\s*\d+\s*days?\b",
         ],
+        pay_now=[
+            r"\babhi\s*pay\b", r"\bpay\s*abhi\b",
+            r"\b(aaj|aaj hi)\s*pay\b", r"\bpay\s*(aaj|aaj hi)\b",
+        ],
         payment_retry=[
             r"\bphir\s*se\b", r"\bdobara\b", r"\bretry\b",
             r"\btry\s*again\b", r"\bwapas\s*pay\b",
+            r"\bpayment\s*(fail|failed)\b", r"\bfail\s*ho\s*(gaya|gayi)\b",
         ],
         payment_link=[
             r"\blink\s*bhejo\b", r"\blink\s*do\b", r"\blink\s*chahiye\b",
@@ -195,10 +236,14 @@ PATTERNS: dict[str, LanguagePatterns] = {
         payment_plan=[
             r"\bkistom\s*mein\b", r"\bemi\s*mein\b", r"\binstallment\b",
             r"\bplan\s*banao\b", r"\bsplit\s*karo\b",
+            r"\b(pura|poora|full)\s*amount\s*nahi\b", r"\bpaisa\s*kam\s*hai\b",
         ],
         question=[
             r"\?$", r"\bkyun\b", r"\bkyaa\b", r"\bkaise\b",
             r"\bkab\b", r"\bkahan\b",
+        ],
+        support=[
+            r"\bhelp\s*chahiye\b", r"\bmadad\s*chahiye\b", r"\bhelp\s*karo\b",
         ],
     ),
     "or": LanguagePatterns(
@@ -622,6 +667,7 @@ def detect_language(message: str) -> str:
         r"\bhoraha\b", r"\bnahi\b", r"\bhaan\b", r"\bji\b", r"\bdiya\b", r"\bkar\b", r"\bchuka\b", r"\bhoga\b", r"\bdey\b", r"\bsey\b",
         r"\bkaro*unga\b", r"\bpay\b.*\bkaro*unga\b", r"\bphir\b",
         r"\bdobara\b", r"\blink\b.*\bbhejo\b", r"\blink\b.*\bdo\b",
+        r"\bmat\b", r"\bbhejo\b",
     ]
     msg_lower = message.lower()
     hinglish_matches = sum(1 for p in hinglish_keywords if re.search(p, msg_lower))

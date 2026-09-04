@@ -58,6 +58,13 @@ class LanguageSlice(BaseModel):
     count: int
 
 
+class FailureReasonSlice(BaseModel):
+    failure_reason: str
+    name: str
+    amount: int
+    count: int
+
+
 class TimelinePoint(BaseModel):
     label: str
     recovered: int
@@ -125,6 +132,7 @@ class RevenueMap(BaseModel):
     recovery_by_channel: list[ChannelSlice] = []
     recovery_by_risk_level: list[RiskLevelSlice] = []
     recovery_by_language: list[LanguageSlice] = []
+    recovery_by_failure_reason: list[FailureReasonSlice] = []
     payment_plan_recovery: PaymentPlanRecovery
     promise_to_pay_recovery: PromiseToPayRecovery
     recovery_timeline: list[TimelinePoint] = []

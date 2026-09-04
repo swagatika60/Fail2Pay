@@ -16,6 +16,7 @@ Everything is computed from the database — nothing is hardcoded.
 import logging
 from collections import defaultdict
 from datetime import timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -356,11 +357,20 @@ def _build_timeline(
     if not captured or earliest is None or latest is None:
         return []
 
+    # Bucket recovered money by the merchant's business day (Asia/Kolkata), not
+    # raw UTC, so the timeline's day labels match the dashboard's "today" for
+    # Indian customers (a 1 AM IST payment belongs to that IST day, not the
+    # previous UTC day).
+    IST = ZoneInfo("Asia/Kolkata")
+
+    def _ist_date(dt) -> "object":
+        return dt.astimezone(IST).date() if dt.tzinfo else dt.date()
+
     daily: dict = defaultdict(int)
     for payment in captured:
-        daily[payment.paid_at.date()] += payment.amount
+        daily[_ist_date(payment.paid_at)] += payment.amount
 
-    span_days = (latest.date() - earliest.date()).days
+    span_days = (_ist_date(latest) - _ist_date(earliest)).days
     if span_days <= 0:
         return []
 
@@ -387,8 +397,8 @@ def _build_timeline(
 
     cumulative = 0
     series = []
-    cursor = earliest.date()
-    end = latest.date()
+    cursor = _ist_date(earliest)
+    end = _ist_date(latest)
     while cursor <= end:
         amount = daily.get(cursor, 0)
         cumulative += amount

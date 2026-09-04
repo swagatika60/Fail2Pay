@@ -36,7 +36,7 @@ class RecoveryCase(Base):
     recovered_amount: Mapped[int] = mapped_column(Integer, default=0)  # how much we got back
     remaining_amount: Mapped[int] = mapped_column(Integer)  # still need to recover
     attempt_count: Mapped[int] = mapped_column(Integer, default=0)  # how many times we tried
-    max_attempts: Mapped[int] = mapped_column(Integer, default=5)  # stop after this many tries
+    max_attempts: Mapped[int] = mapped_column(Integer, default=8)  # stop after this many tries
     recovery_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     recovery_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
+import { AlertTriangle } from "lucide-react"
 import type { SubscriptionFailureItem, SubscriptionSummary } from "../types/operations"
 import { fetchSubscriptionFailures, fetchSubscriptionSummary } from "../services/operations"
 import { PageHeader } from "../components/ui/PageHeader"
@@ -36,8 +37,9 @@ function ChurnBadge({ days }: { days: number | null }) {
   if (days === null) return <span className="text-[10px] text-ink-faint">—</span>
   if (days <= 1)
     return (
-      <span className="inline-flex rounded-full border border-red-500/30 bg-red-500/15 px-2 py-0.5 text-[10px] font-semibold text-red-400">
-        ⚠ {days}d left
+      <span className="inline-flex items-center gap-1 rounded-full border border-red-500/30 bg-red-500/15 px-2 py-0.5 text-[10px] font-semibold text-red-400">
+        <AlertTriangle className="h-3 w-3" />
+        {days}d left
       </span>
     )
   if (days <= 3)
@@ -157,7 +159,7 @@ export default function SubscriptionFailuresPage() {
 
       {/* Table */}
       {loading ? (
-        <SkeletonTable rows={5} cols={8} />
+        <SkeletonTable rows={5} />
       ) : filtered.length === 0 ? (
         <EmptyState
           title="No subscription failures"

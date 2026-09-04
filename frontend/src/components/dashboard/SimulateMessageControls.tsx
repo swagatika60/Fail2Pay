@@ -1,4 +1,11 @@
 import { useState } from "react"
+import {
+  Banknote,
+  CheckCircle2,
+  FlaskConical,
+  ShieldAlert,
+  StopCircle,
+} from "lucide-react"
 import { simulateCustomerMessage } from "../../services/operations"
 import type { SimulateMessageResult } from "../../services/operations"
 import {
@@ -128,8 +135,9 @@ export default function SimulateMessageControls({
 
   return (
     <div className={compact ? "space-y-2" : "rounded-xl border border-slate-700 bg-slate-900 p-4"}>
-      <p className="text-xs font-medium text-slate-400">
-        🧪 Simulate customer reply — tap a quick-reply to run the full dialogue
+      <p className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-400">
+        <FlaskConical className="h-3.5 w-3.5 text-slate-500" />
+        Simulate customer reply — tap a quick-reply to run the full dialogue
         cycle
       </p>
       <div className="flex flex-wrap gap-2">
@@ -149,8 +157,8 @@ export default function SimulateMessageControls({
       {/* Dynamic split-in-N EMIs chips with computed amounts */}
       {splitOptions.length > 0 && (
         <div className="mt-2">
-          <p className="mb-1 text-[11px] text-slate-500">
-            💸{" "}
+          <p className="mb-1 inline-flex items-center gap-1.5 text-[11px] text-slate-500">
+            <Banknote className="h-3.5 w-3.5 text-slate-500" />
             {hinglish
               ? `${formatINRFull(amount!)} ko N kisth mein baantein:`
               : `Split in N EMIs (computed from ${formatINRFull(amount!)}):`}
@@ -210,11 +218,17 @@ export default function SimulateMessageControls({
                     : "bg-blue-500/20 text-blue-400"
               }`}
             >
-              {result.recovered
-                ? "✅ RECOVERED"
-                : result.case_status === "STOPPED"
-                  ? "🛑 STOPPED"
-                  : result.case_status.replace(/_/g, " ")}
+              {result.recovered ? (
+                <>
+                  <CheckCircle2 className="mr-1 inline h-3 w-3" /> RECOVERED
+                </>
+              ) : result.case_status === "STOPPED" ? (
+                <>
+                  <StopCircle className="mr-1 inline h-3 w-3" /> STOPPED
+                </>
+              ) : (
+                result.case_status.replace(/_/g, " ")
+              )}
               {result.escalated_to_human ? " · ESCALATED TO HUMAN" : ""}
               {result.hard_stopped ? " · HARD-STOPPED" : ""}
             </span>
@@ -258,7 +272,10 @@ export default function SimulateMessageControls({
             )}
           </div>
           {result.guardrail_note && (
-            <p className="mt-2 text-red-300">🛡️ {result.guardrail_note}</p>
+            <p className="mt-2 inline-flex items-start gap-1.5 text-red-300">
+              <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              {result.guardrail_note}
+            </p>
           )}
           {result.reply_text && (
             <div className="mt-2 rounded bg-slate-800/50 p-2 text-slate-300">

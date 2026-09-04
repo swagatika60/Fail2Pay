@@ -61,11 +61,17 @@ def get_payment_details(payment_id: str) -> PaymentResponse:
 # verify payment signature
 @router.post("/verify", response_model=VerifyPaymentResponse)
 def verify_payment(request: VerifyPaymentRequest) -> VerifyPaymentResponse:
-    is_valid = verify_payment_signature(
-        razorpay_order_id=request.razorpay_order_id,
-        razorpay_payment_id=request.razorpay_payment_id,
-        razorpay_signature=request.razorpay_signature,
-    )
+    try:
+        is_valid = verify_payment_signature(
+            razorpay_order_id=request.razorpay_order_id,
+            razorpay_payment_id=request.razorpay_payment_id,
+            razorpay_signature=request.razorpay_signature,
+        )
+    except RuntimeError as e:
+        # Razorpay keys not configured — signature verification is impossible.
+        # Report the upstream as unavailable (same as /orders and /{payment_id})
+        # instead of leaking an unhandled 500.
+        raise HTTPException(status_code=502, detail=str(e))
     if is_valid:
         return VerifyPaymentResponse(verified=True, message="Payment verified successfully")
     else:

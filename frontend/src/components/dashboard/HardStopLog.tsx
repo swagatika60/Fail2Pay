@@ -1,3 +1,4 @@
+import { Ban, CheckCircle2 } from "lucide-react"
 import type { HardStop } from "../../types/analytics"
 
 interface HardStopLogProps {
@@ -30,8 +31,9 @@ function formatDateTime(dateStr: string | null): string {
 export default function HardStopLog({ hardStops }: HardStopLogProps) {
   if (hardStops.length === 0) {
     return (
-      <div className="rounded-lg bg-slate-800/50 p-4 text-center text-sm text-slate-500">
-        No hard stop events — all clear 🟢
+      <div className="flex items-center justify-center gap-2 rounded-lg bg-slate-800/50 p-4 text-sm text-slate-500">
+        <CheckCircle2 className="h-4 w-4 text-green-400" />
+        No hard stop events — all clear
       </div>
     )
   }
@@ -51,7 +53,7 @@ export default function HardStopLog({ hardStops }: HardStopLogProps) {
           >
             <div className="mb-2 flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <span className="text-lg">🛑</span>
+                <Ban className="h-4 w-4 shrink-0 text-red-400" />
                 <span className={`text-sm font-medium ${info.color}`}>
                   {info.label}
                 </span>

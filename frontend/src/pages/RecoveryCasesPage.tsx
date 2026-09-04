@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react"
 import { Link } from "react-router-dom"
+import { FolderOpen } from "lucide-react"
 import { useDashboardStore } from "../hooks/dashboardStore"
 import { PageHeader } from "../components/ui/PageHeader"
 import { Card } from "../components/ui/Card"
@@ -143,7 +144,7 @@ export default function RecoveryCasesPage() {
         ) : filtered.length === 0 ? (
           <div className="p-6">
             <EmptyState
-              icon="🗂️"
+              icon={FolderOpen}
               title="No cases match"
               description="Try a different status, risk level, or search term."
             />

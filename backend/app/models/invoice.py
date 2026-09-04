@@ -1,7 +1,7 @@
 import enum
 import secrets
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 from sqlalchemy import String, Integer, DateTime, ForeignKey, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship

@@ -1,5 +1,5 @@
 import { useId, type ReactNode } from "react"
-import { ArrowDownRight, ArrowUpRight } from "lucide-react"
+import { ArrowDownRight, ArrowUpRight, Info } from "lucide-react"
 import { formatMoney } from "../../lib/format"
 
 /** Back-compat classifier kept for shared case-detail components. */
@@ -25,6 +25,20 @@ const TONE_VALUE: Record<Tone, string> = {
   rose: "text-rose-400",
 }
 
+// Sparkline stroke/fill pair per card tone so the mini-chart's colour always
+// carries the same meaning as the value (recovery = green, exposure = amber).
+interface SparkColor {
+  stroke: string
+  rgb: string
+}
+
+const SPARK_COLOR: Record<Tone, SparkColor> = {
+  default: { stroke: "#34d399", rgb: "52 211 153" },
+  emerald: { stroke: "#34d399", rgb: "52 211 153" },
+  amber: { stroke: "#f59e0b", rgb: "245 158 11" },
+  rose: { stroke: "#fb7185", rgb: "251 113 133" },
+}
+
 export interface MetricCardProps {
   label: string
   value: ReactNode
@@ -34,6 +48,8 @@ export interface MetricCardProps {
   tone?: Tone
   /** Optional inline sparkline (series of numbers) rendered under the value. */
   spark?: number[]
+  /** Optional explanation shown as an inline info glyph (native tooltip). */
+  hint?: string
   icon?: ReactNode
 }
 
@@ -53,7 +69,15 @@ function DeltaBadge({ delta }: { delta: Delta }) {
   )
 }
 
-function Sparkline({ data, gradientId }: { data: number[]; gradientId: string }) {
+function Sparkline({
+  data,
+  gradientId,
+  color,
+}: {
+  data: number[]
+  gradientId: string
+  color: SparkColor
+}) {
   if (data.length < 2) return null
   const max = Math.max(...data)
   const min = Math.min(...data)
@@ -74,15 +98,16 @@ function Sparkline({ data, gradientId }: { data: number[]; gradientId: string })
     >
       <defs>
         <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="rgb(52 211 153 / 0.25)" />
-          <stop offset="100%" stopColor="rgb(52 211 153 / 0)" />
+          <stop offset="0%" stopColor={`rgb(${color.rgb} / 0.25)`} />
+          <stop offset="100%" stopColor={`rgb(${color.rgb} / 0)`} />
         </linearGradient>
       </defs>
       <polygon points={area} fill={`url(#${gradientId})`} />
       <polyline
         points={points}
         fill="none"
-        stroke="rgb(52 211 153 / 0.9)"
+        stroke={color.stroke}
+        strokeOpacity={0.9}
         strokeWidth={1.5}
         strokeLinejoin="round"
         strokeLinecap="round"
@@ -98,16 +123,29 @@ export function MetricCard({
   context,
   tone = "default",
   spark,
+  hint,
   icon,
 }: MetricCardProps) {
   const sparkId = useId().replace(/:/g, "")
+  const sparkColor = SPARK_COLOR[tone]
   return (
     <div className="panel flex flex-col rounded-xl p-5">
       <div className="flex items-start justify-between gap-2">
         <p className="text-xs font-medium uppercase tracking-wider text-slate-400">
           {label}
         </p>
-        {icon && <span className="shrink-0 text-slate-500">{icon}</span>}
+        <span className="flex shrink-0 items-center gap-1.5 text-slate-500">
+          {hint && (
+            <span
+              className="inline-flex cursor-help"
+              title={hint}
+              aria-label={hint}
+            >
+              <Info className="h-3 w-3 opacity-70 transition-opacity hover:opacity-100" />
+            </span>
+          )}
+          {icon && <span className="shrink-0">{icon}</span>}
+        </span>
       </div>
       <div className="mt-2 flex items-baseline gap-2">
         <span className={`text-2xl font-semibold tracking-tight ${TONE_VALUE[tone]}`}>
@@ -120,11 +158,11 @@ export function MetricCard({
         )}
       </div>
       {context && (
-        <div className="mt-1.5 text-xs text-slate-500">{context}</div>
+        <div className="mt-1.5 text-xs leading-snug text-slate-500">{context}</div>
       )}
-      {spark && (
+      {spark && spark.length > 1 && (
         <div className="mt-3 rounded-md border border-slate-800/60 bg-slate-900/40 p-1.5">
-          <Sparkline data={spark} gradientId={sparkId} />
+          <Sparkline data={spark} gradientId={sparkId} color={sparkColor} />
         </div>
       )}
     </div>

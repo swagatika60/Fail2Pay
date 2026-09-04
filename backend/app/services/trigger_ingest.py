@@ -146,7 +146,7 @@ def ingest_trigger(
     )
 
     # --- Deterministic risk assessment ---
-    from app.services.revenue_risk import assess_and_log_risk, assess_risk
+    from app.services.revenue_risk import assess_risk
 
     assessment = assess_risk(
         db=db,

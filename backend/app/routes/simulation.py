@@ -5,8 +5,12 @@ All data is clearly marked as DEMO_SIMULATION.
 """
 
 import logging
+import random
+import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -14,6 +18,23 @@ from app.database import get_db
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/simulation", tags=["simulation"])
+
+
+INDIAN_NAMES = [
+    ("Rahul", "Sharma"), ("Priya", "Patel"), ("Amit", "Kumar"),
+    ("Neha", "Gupta"), ("Rohan", "Singh"), ("Anjali", "Verma"),
+    ("Vikram", "Reddy"), ("Pooja", "Nair"), ("Arjun", "Malhotra"),
+    ("Kavita", "Joshi"),
+]
+
+FAILURE_REASONS = [
+    "Insufficient funds",
+    "Card expired",
+    "Bank declined transaction",
+    "Payment gateway timeout",
+    "Authentication failed",
+    "Daily limit exceeded",
+]
 
 
 @router.post("/run")
@@ -35,6 +56,204 @@ def run_simulation(db: Session = Depends(get_db)):
             status_code=500,
             detail=f"Simulation failed: {e}",
         ) from e
+
+
+class SingleCaseRequest(BaseModel):
+    amount: int = Field(0, description="Amount in paise (0 = random)")
+    name: str | None = Field(None, description="Customer name (0 = random)")
+
+
+@router.post("/single")
+def simulate_single_case(
+    body: SingleCaseRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    """Create a single persisted simulation case in the database.
+
+    Unlike the dashboard's client-side mock, this creates real DB rows
+    (Customer → RevenueEvent → RecoveryCase → AuditEvent → AgentSteps)
+    so the case survives page refreshes and can be navigated to from
+    the cases list.
+
+    Returns the case_id plus basic summary fields so the frontend can
+    immediately link to /case/{case_id}.
+    """
+    from app.crud.customer import create_customer
+    from app.crud.recovery_case import create_recovery_case
+    from app.crud.revenue_event import create_revenue_event
+    from app.models.recovery_case import RecoveryCase, RecoveryStatus
+    from app.schemas.customer import CustomerCreate
+    from app.schemas.recovery_case import RecoveryCaseCreate
+    from app.schemas.revenue_event import RevenueEventCreate
+    from app.services import agent_steps
+    from app.services.recovery_settings import get_or_create
+    from app.services.revenue_risk import assess_risk
+
+    now = datetime.now(timezone.utc)
+
+    # --- Determine customer info ---
+    name_tuple = random.choice(INDIAN_NAMES)
+    customer_name = body.name if body and body.name else f"{name_tuple[0]} {name_tuple[1]}"
+    email = f"{name_tuple[0].lower()}.{name_tuple[1].lower()}_{uuid.uuid4().hex[:8]}@gmail.com"
+    phone = f"+91{random.randint(7000000000, 9999999999)}"
+    # ``body.amount`` is paise (see SingleCaseRequest docstring) — never scale
+    # an explicit amount. Only the random fallback (rupees) is converted.
+    if body and body.amount and body.amount > 0:
+        amount = body.amount
+    else:
+        amount = random.choice([499, 999, 1999, 4999, 9999, 14999]) * 100
+
+    # --- Create customer ---
+    customer = create_customer(
+        db,
+        data=CustomerCreate(
+            external_id=f"DEMO_SIMULATION_sim_{uuid.uuid4().hex[:12]}",
+            email=email,
+            phone=phone,
+            name=customer_name,
+        ),
+    )
+
+    # --- Create revenue event ---
+    failure_reason = random.choice(FAILURE_REASONS)
+    revenue_event = create_revenue_event(
+        db,
+        data=RevenueEventCreate(
+            customer_id=customer.id,
+            external_event_id=f"pay_DEMO_SINGLE_{uuid.uuid4().hex[:8]}",
+            event_type="payment_failed",
+            amount=amount,
+            currency="INR",
+            status="failed",
+            source="razorpay",
+            extra_data={
+                "simulation": True,
+                "scenario": "single_sim",
+                "failure_reason": failure_reason,
+                "method": random.choice(["card", "upi", "netbanking", "wallet"]),
+            },
+        ),
+    )
+
+    # --- Risk assessment ---
+    assessment = assess_risk(
+        db=db,
+        customer_id=str(customer.id),
+        revenue_event_id=str(revenue_event.id),
+        event_type="payment_failed",
+        amount=amount,
+        extra_data={"failure_reason": failure_reason},
+    )
+
+    # --- Create recovery case ---
+    merchant_settings = get_or_create(db)
+    max_attempts = merchant_settings.max_recovery_attempts
+
+    recovery_case = create_recovery_case(
+        db,
+        data=RecoveryCaseCreate(
+            customer_id=customer.id,
+            revenue_event_id=revenue_event.id,
+            risk_level=assessment.risk_level,
+            risk_reason=assessment.risk_reason,
+            original_amount=amount,
+            remaining_amount=amount,
+            max_attempts=max_attempts,
+        ),
+    )
+    recovery_case.status = RecoveryStatus.AT_RISK
+    recovery_case.extra_data = {
+        "simulation": True,
+        "scenario": "single_sim",
+        "root_cause": "PAYMENT_FAILURE",
+    }
+    db.commit()
+    db.refresh(recovery_case)
+
+    # --- Audit events ---
+    # Domain events (same as the webhook path) so the policy trace carries the
+    # trigger (REVENUE_DETECTED / RISK_DETECTED) layer, not just a generic
+    # "created" row.
+    from app.services.audit_logger import (
+        log_revenue_detected,
+        log_risk_detected,
+    )
+
+    log_revenue_detected(
+        db,
+        recovery_case.id,
+        amount=amount,
+        payment_id=revenue_event.external_event_id,
+        failure_reason=failure_reason,
+    )
+    log_risk_detected(
+        db,
+        recovery_case.id,
+        risk_level=assessment.risk_level,
+        risk_reason=assessment.risk_reason,
+        amount=amount,
+    )
+
+    # --- Agent reasoning steps ---
+    agent_steps.emit_case_step(
+        db,
+        case_id=str(recovery_case.id),
+        stage=agent_steps.AgentStage.TRIGGER,
+        label="Trigger Received",
+        detail=f"payment.failed · {failure_reason}",
+        confidence=1.0,
+        extra={"amount": amount, "method": "simulated"},
+    )
+    agent_steps.emit_case_step(
+        db,
+        case_id=str(recovery_case.id),
+        stage=agent_steps.AgentStage.DIAGNOSIS,
+        label="Root Cause: Payment Failure",
+        detail=f"Simulated payment failure — {failure_reason}",
+        confidence=0.92,
+        extra={"failure_reason": failure_reason},
+    )
+    agent_steps.emit_case_step(
+        db,
+        case_id=str(recovery_case.id),
+        stage=agent_steps.AgentStage.POLICY,
+        label="Policy Check: Recoverable",
+        detail=f"risk={assessment.risk_level} · recoverable={assessment.is_recoverable}",
+        confidence=1.0,
+        extra={"risk_level": assessment.risk_level},
+    )
+
+    # --- Initiate recovery ---
+    from app.services.orchestrator import initiate_recovery
+
+    recovery_result = initiate_recovery(db, recovery_case.id)
+    action_label = {
+        "initiated": "Recovery Initiated: WhatsApp",
+        "skipped": "Policy Blocked: Skipped",
+    }.get(recovery_result.get("status"), "Action Dispatched")
+
+    agent_steps.emit_case_step(
+        db,
+        case_id=str(recovery_case.id),
+        stage=agent_steps.AgentStage.ACTION,
+        label=action_label,
+        detail=f"status={recovery_result.get('status')}",
+        confidence=0.98,
+        extra={"recovery_result": recovery_result},
+    )
+
+    logger.info(
+        "Single simulation case created: case=%s amount=%d customer=%s",
+        recovery_case.id, amount, customer_name,
+    )
+
+    return {
+        "case_id": str(recovery_case.id),
+        "customer_name": customer_name,
+        "original_amount": amount,
+        "risk_level": assessment.risk_level,
+        "status": "AT_RISK",
+    }
 
 
 @router.get("/analytics")

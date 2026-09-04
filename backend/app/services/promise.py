@@ -29,11 +29,9 @@ from app.crud.customer import get_customer
 from app.crud.promise import (
     create_promise,
     get_active_promise_for_case,
-    get_promise,
     mark_promise_fulfilled,
     mark_promise_missed,
     cancel_promise,
-    expire_promise,
     get_expired_promises,
     count_promises_by_status,
     get_promises_by_case,

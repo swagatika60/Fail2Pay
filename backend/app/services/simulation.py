@@ -1,6 +1,6 @@
 """Batch Simulation System for Fail2Pay.
 
-Creates a controlled test dataset of 100 transactions with various
+Creates a controlled test dataset of transactions with various
 recovery scenarios. All data is clearly marked as DEMO data.
 
 Scenarios:
@@ -15,6 +15,9 @@ Scenarios:
 - Customers opting out
 - Customers whose payment is recovered
 - Promise made but broken before eventual recovery
+- Customers contacted but not yet responding (still in train)
+- Customers engaged in conversation but not yet paying (still in train)
+- Customers who just failed — not yet contacted (open backlog)
 
 Revenue rules (hard guarantees):
 - ``RecoveredRevenue`` is the sum of **verified captured payments** only
@@ -75,9 +78,21 @@ FAILURE_REASONS = [
     "Daily limit exceeded",
 ]
 
+# Map demo gateway reasons onto the canonical root-cause taxonomy so the
+# "Recovery by Root Cause" chart buckets verified payments meaningfully
+# (kept in sync with ``app.services.root_cause`` categories).
+ROOT_CAUSE_BY_REASON = {
+    "Insufficient funds": "LIQUIDITY_CONSTRAINT",
+    "Daily limit exceeded": "LIQUIDITY_CONSTRAINT",
+    "Card expired": "USER_HESITATION",
+    "Bank declined transaction": "USER_HESITATION",
+    "Authentication failed": "USER_HESITATION",
+    "Payment gateway timeout": "TECHNICAL_RETRY",
+}
+
 
 # ============================================================
-# SCENARIO DISTRIBUTION (sums to 100 transactions)
+# SCENARIO DISTRIBUTION (sums to 118 transactions)
 # ============================================================
 
 SCENARIOS = {
@@ -116,6 +131,15 @@ SCENARIOS = {
 
     # Failed - promise broken, then eventually pays (verified payment)
     "promise_broken_recovered": 5,
+
+    # Failed - contacted (outbound attempts) but no reply yet — still open
+    "no_reply_contacted": 8,
+
+    # Failed - customer engaged in conversation but hasn't paid yet — open
+    "replied_not_paid": 4,
+
+    # Failed - brand new, never contacted (open backlog, not yet engaged)
+    "failed_fresh": 6,
 }
 
 
@@ -188,12 +212,10 @@ def _cleanup_demo_data(db: Session) -> int:
 
 
 def run_simulation(db: Session) -> dict:
-    """Run the batch simulation with 100 controlled test transactions.
+    """Run the batch simulation with a controlled set of test transactions.
 
     Creates:
-    - 100 customers
-    - 100 revenue events (payment failures)
-    - 100 recovery cases
+    - one customer / revenue event / recovery case per transaction
     - Verified ``Payment`` rows only where money was actually captured
     - ``PaymentPlan`` / ``Installment`` rows for plan scenarios
     - Conversations / messages for every scenario
@@ -237,6 +259,9 @@ def run_simulation(db: Session) -> dict:
             "promise_to_pay",
             "payment_plan_request",
             "plan_partial",
+            "no_reply_contacted",
+            "replied_not_paid",
+            "failed_fresh",
         }
 
         for _ in range(count):
@@ -268,6 +293,8 @@ def run_simulation(db: Session) -> dict:
                 name=f"{name[0]} {name[1]}",
             )
 
+            failure_reason = random.choice(FAILURE_REASONS)
+
             revenue_event = RevenueEvent(
                 id=uuid.uuid4(),
                 customer_id=customer_id,
@@ -281,7 +308,7 @@ def run_simulation(db: Session) -> dict:
                 extra_data={
                     "simulation": True,
                     "scenario": scenario_name,
-                    "failure_reason": random.choice(FAILURE_REASONS),
+                    "failure_reason": failure_reason,
                     "method": random.choice(PAYMENT_METHODS),
                 },
             )
@@ -301,7 +328,11 @@ def run_simulation(db: Session) -> dict:
                 status=RecoveryStatus.AT_RISK,
                 created_at=created_at,
                 recovery_started_at=created_at + timedelta(days=1),
-                extra_data={"simulation": True, "scenario": scenario_name},
+                extra_data={
+                    "simulation": True,
+                    "scenario": scenario_name,
+                    "root_cause": ROOT_CAUSE_BY_REASON.get(failure_reason, "UNKNOWN"),
+                },
             )
 
             outcome, scenario_objects = _apply_scenario(
@@ -702,6 +733,35 @@ def _apply_scenario(
         pay(amount)
         recover()
         outcome.update(final_status="RECOVERED", recovered=True)
+
+    elif scenario == "no_reply_contacted":
+        # Outbound attempts only — customer hasn't replied yet. Case stays
+        # open so the pipeline strip shows a real Contacted bucket.
+        case.status = RecoveryStatus.RECOVERY_IN_PROGRESS
+        case.attempt_count = 2
+        items.append(conv(
+            ("outbound", f"Hi {role}, your payment of {_fmt(amount)} needs attention."),
+            ("outbound", "Reminder: Please complete your payment."),
+        ))
+        outcome.update(final_status="RECOVERY_IN_PROGRESS", recovered=False)
+
+    elif scenario == "replied_not_paid":
+        # Customer engaged in conversation but money hasn't arrived yet.
+        # Case stays open so the pipeline strip shows a real Engaged bucket.
+        case.status = RecoveryStatus.RECOVERY_IN_PROGRESS
+        case.attempt_count = 2
+        items.append(conv(
+            ("outbound", f"Hi {role}, your payment of {_fmt(amount)} needs attention."),
+            ("inbound", "I'm having trouble with the payment link."),
+            ("outbound", "No problem — here's a fresh link. Let me know once it's done."),
+        ))
+        outcome.update(final_status="RECOVERY_IN_PROGRESS", recovered=False)
+
+    elif scenario == "failed_fresh":
+        # Brand-new failure — no outreach dispatched yet. The case stays
+        # AT_RISK with zero attempts so the dashboard can show a real
+        # "unengaged / open backlog" bucket distinct from engaged cases.
+        outcome.update(final_status="AT_RISK", recovered=False)
 
     else:
         logger.warning("Unknown scenario %r — leaving case AT_RISK", scenario)

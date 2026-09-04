@@ -13,7 +13,11 @@ class Settings(BaseSettings):
     # AI Intent Detection settings
     ai_api_key: str = ""
     ai_model: str = "gpt-4o-mini"
-    ai_timeout_seconds: int = 5  # Reduced from 10s for faster conversational responses
+    # Optional OpenAI-compatible base URL. When empty, the provider auto-detects:
+    # Google-issued keys (AIza…/AQ.… — Gemini API keys) route to Google's
+    # OpenAI-compatible endpoint with a Gemini model; everything else uses OpenAI.
+    ai_base_url: str = ""
+    ai_timeout_seconds: int = 15  # Conversational, but leaves headroom for slow first calls (Gemini cold starts)
     ai_confidence_threshold: float = 0.6
     # WhatsApp settings
     whatsapp_access_token: str = ""

@@ -26,9 +26,8 @@ Key principles:
 import logging
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from functools import wraps
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -607,7 +606,6 @@ def ensure_payment_success_stops_recovery(db, case_id) -> bool:
     """
     try:
         from app.crud.recovery_case import get_recovery_case
-        from app.models.recovery_case import RecoveryStatus
         from app.crud.scheduled_action import cancel_pending_actions_for_case
         from app.services.hard_stop import check_hard_stop
 

@@ -248,6 +248,48 @@ def get_case_hard_stops(case_id: UUID, db: Session = Depends(get_db)):
     ]
 
 
+@router.get("/{case_id}/voice-calls")
+def get_case_voice_calls(case_id: UUID, db: Session = Depends(get_db)):
+    """Get voice interaction history for a recovery case.
+
+    Every IVR call (inbound / outbound / ivr-action) is logged as a
+    ``voice_call`` audit event — surfaced here so the ops console shows the
+    full voice recovery thread next to WhatsApp and email.
+    """
+    from app.models.audit_event import AuditEvent
+    from sqlalchemy import select
+
+    events = list(
+        db.execute(
+            select(AuditEvent)
+            .where(
+                AuditEvent.recovery_case_id == case_id,
+                AuditEvent.entity_type == "voice_call",
+            )
+            .order_by(AuditEvent.created_at.desc())
+        ).scalars().all()
+    )
+
+    result = []
+    for ev in events:
+        meta = ev.new_value or {}
+        result.append(
+            {
+                "id": str(ev.id),
+                "call_sid": meta.get("call_sid", ""),
+                "direction": meta.get("direction", ""),
+                "duration_seconds": meta.get("duration_seconds", 0),
+                "transcription": meta.get("transcription", ""),
+                "intent": meta.get("intent", ""),
+                "dtmf_input": meta.get("dtmf_input", ""),
+                "language": meta.get("language", ""),
+                "status": meta.get("status", ""),
+                "created_at": ev.created_at.isoformat() if ev.created_at else None,
+            }
+        )
+    return result
+
+
 @router.get("/{case_id}/timeline")
 def get_case_timeline(case_id: UUID, db: Session = Depends(get_db)):
     """Get the full recovery timeline for a case.
@@ -782,6 +824,40 @@ def simulate_customer_message(
             finalize_recovered_case(db, case, reason="simulate_pay_now")
             from app.services.audit_logger import log_payment_recovered
             log_payment_recovered(db, case.id, case.original_amount)
+            # Record a verified captured Payment row — the same ground truth a
+            # ``payment.captured`` webhook would write — so the Impact Ledger /
+            # Revenue Map count this as real recovered money (messages and
+            # promises never count; only captured payments do). Idempotent per
+            # case so repeated pay-now taps never double-count.
+            from uuid import uuid4 as _uuid4
+
+            from sqlalchemy import select
+
+            from app.models.payment import Payment
+
+            existing_payment = db.execute(
+                select(Payment).where(Payment.recovery_case_id == case.id)
+            ).scalar_one_or_none()
+            if existing_payment is None:
+                payment_id = f"pay_sim_{_uuid4().hex[:12]}"
+                db.add(
+                    Payment(
+                        recovery_case_id=case.id,
+                        razorpay_payment_id=payment_id,
+                        razorpay_order_id=f"order_sim_{case.id.hex[:8]}",
+                        amount=case.original_amount,
+                        currency="INR",
+                        status="captured",
+                        method="simulated",
+                        paid_at=datetime.now(timezone.utc),
+                        extra_data={
+                            "source": "simulation",
+                            "channel": "whatsapp",
+                            "trigger": trigger,
+                        },
+                    )
+                )
+                db.commit()
             recovered = True
             reply_intent = "PAYMENT_LINK_REQUEST"
             db.refresh(case)
@@ -1060,6 +1136,7 @@ def simulate_customer_message(
         split_details=(nested_split_details or (split_plan or {}).get("split")),
         split_count=split_count,
         pay_today=pay_today if reply_intent == "PAYMENT_PLAN_REQUEST" else None,
+        customer_message=message_text,
         escalate_note=("Our billing desk has been notified. A revised "
                        "breakdown is on its way to your email.") if escalated_to_human else None,
         history=history,

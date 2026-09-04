@@ -9,7 +9,13 @@ voice-based revenue recovery:
     POST /api/voice/status          — Call status callback
 
 All voice interactions follow the same policy engine guardrails as
-WhatsApp/email. Hard stops apply identically.
+WhatsApp/email. Hard stops apply identically, and the same terminal
+states (RECOVERED / LOST / STOPPED) gate voice outreach.
+
+Production credentials required for real voice communication (Twilio):
+    TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_PHONE_NUMBER
+Until those are configured these endpoints return TwiML previews and log
+audit events only — they never place a real call.
 """
 
 import logging
@@ -85,6 +91,24 @@ async def handle_inbound_call(request: Request, db: Session = Depends(get_db)):
         if case:
             case_id = str(case.id)
             language = (case.extra_data or {}).get("language", "en")
+
+    # A customer who opted out (STOPPED) is never re-engaged with a recovery
+    # menu over voice — answer politely with the opt-out acknowledgment only.
+    if case and case.status == RecoveryStatus.STOPPED:
+        from app.services.voice_recovery import generate_twiml_stop, log_voice_interaction
+        log_voice_interaction(
+            db,
+            case.id,
+            call_sid=call_sid,
+            direction="inbound",
+            language=language,
+            intent="STOP_REQUEST",
+            status="stopped_case_ack",
+        )
+        return Response(
+            content=generate_twiml_stop(language),
+            media_type="application/xml",
+        )
 
     twiml = generate_twiml_greeting(language=language, case_id=case_id)
 
@@ -226,9 +250,12 @@ async def handle_ivr_action(request: Request, db: Session = Depends(get_db)):
             select(RecoveryCase)
             .where(
                 RecoveryCase.customer_id == customer.id,
+                # STOPPED is excluded: a customer who opted out is never
+                # re-engaged with the recovery menu.
                 RecoveryCase.status.notin_([
                     RecoveryStatus.RECOVERED,
                     RecoveryStatus.LOST,
+                    RecoveryStatus.STOPPED,
                 ]),
             )
             .order_by(RecoveryCase.created_at.desc())
@@ -254,7 +281,27 @@ async def handle_ivr_action(request: Request, db: Session = Depends(get_db)):
         )
 
     # Generate TwiML response based on intent
-    if intent == "PAY_NOW" and payment_url:
+    if intent == "STOP_REQUEST" and case_id:
+        # Apply the SAME deterministic stop semantics as WhatsApp/scheduler:
+        # case → STOPPED, all pending reminders cancelled, no further outreach.
+        from uuid import UUID as _UUID
+        from app.services.workflow_engine import stop_recovery
+        from app.crud.scheduled_action import cancel_pending_actions_for_case
+
+        stop_result = stop_recovery(db, case_id, "customer_requested_stop")
+        cancelled = cancel_pending_actions_for_case(
+            db, case_id, reason="customer_requested_stop"
+        )
+        logger.info(
+            "Voice opt-out applied: case=%s result=%s cancelled=%s",
+            case_id, stop_result.get("status"), cancelled,
+        )
+        # Re-fetch language (may have changed) then acknowledge over voice.
+        case_obj = db.get(RecoveryCase, _UUID(str(case_id)))
+        if case_obj:
+            language = (case_obj.extra_data or {}).get("language", language)
+        twiml = generate_twiml_stop(language)
+    elif intent == "PAY_NOW" and payment_url:
         from app.models.recovery_case import RecoveryCase as RC
         case_obj = db.get(RC, case_id) if case_id else None
         amount = case_obj.remaining_amount if case_obj else 0

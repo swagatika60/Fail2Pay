@@ -1,20 +1,13 @@
 import { Link } from "react-router-dom"
 import { ArrowUpRight, ChevronRight } from "lucide-react"
 import type { RecoveryCaseSummary } from "../../types/analytics"
-import { caseMeta } from "../../lib/status"
+import { caseMeta, riskMeta } from "../../lib/status"
 import { formatINR, timeAgo, initials } from "../../lib/format"
 import { Button } from "../ui/Button"
 
-const RISK_DOT: Record<string, string> = {
-  HIGH: "bg-rose-400",
-  MEDIUM: "bg-amber-400",
-  LOW: "bg-emerald-400",
-}
-
-const RISK_LABEL: Record<string, string> = {
-  HIGH: "High",
-  MEDIUM: "Medium",
-  LOW: "Low",
+/** Compact human reference for a case (full UUID in the hover tooltip). */
+function shortCaseId(id: string): string {
+  return id.slice(0, 8)
 }
 
 /**
@@ -41,11 +34,14 @@ export function AttentionTable({
 
   return (
     <div className="overflow-x-auto px-5">
-      <table className="w-full min-w-[540px] border-collapse text-left">
+      <table className="w-full min-w-[620px] border-collapse text-left">
         <thead>
           <tr className="border-b border-slate-800/70">
             <th className="pb-2 pr-4 text-xs font-medium uppercase tracking-wider text-slate-500">
               Customer
+            </th>
+            <th className="pb-2 pr-4 text-xs font-medium uppercase tracking-wider text-slate-500">
+              Case ID
             </th>
             <th className="pb-2 pr-4 text-right text-xs font-medium uppercase tracking-wider text-slate-500">
               Amount
@@ -64,7 +60,7 @@ export function AttentionTable({
         <tbody>
           {rows.map((c) => {
             const meta = caseMeta(c.status)
-            const riskDot = RISK_DOT[c.risk_level] ?? "bg-slate-400"
+            const risk = riskMeta(c.risk_level)
             return (
               <tr
                 key={c.id}
@@ -85,6 +81,15 @@ export function AttentionTable({
                     </div>
                   </div>
                 </td>
+                <td className="py-2.5 pr-4">
+                  <Link
+                    to={`/case/${c.id}`}
+                    className="font-mono text-[11px] tabular-nums text-slate-500 transition-colors hover:text-slate-300"
+                    title={`Case ${c.id}`}
+                  >
+                    #{shortCaseId(c.id)}
+                  </Link>
+                </td>
                 <td className="py-2.5 pr-4 text-right text-sm font-semibold tabular-nums text-slate-100">
                   {formatINR(c.remaining_amount)}
                 </td>
@@ -97,9 +102,11 @@ export function AttentionTable({
                   </span>
                 </td>
                 <td className="py-2.5 pr-4">
-                  <span className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-400">
-                    <span className={`h-1.5 w-1.5 rounded-full ${riskDot}`} />
-                    {RISK_LABEL[c.risk_level] ?? c.risk_level}
+                  <span
+                    className={`inline-flex items-center gap-1.5 rounded border px-2 py-0.5 text-[11px] font-medium ${risk.badge}`}
+                  >
+                    <span className={`h-1.5 w-1.5 rounded-full ${risk.dot}`} />
+                    {risk.label}
                   </span>
                 </td>
                 <td className="py-2.5 text-right">

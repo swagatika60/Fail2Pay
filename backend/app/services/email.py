@@ -20,7 +20,6 @@ Email types:
 
 import logging
 import uuid
-from datetime import datetime, timezone
 
 import httpx
 from sqlalchemy.orm import Session

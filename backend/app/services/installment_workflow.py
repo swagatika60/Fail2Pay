@@ -19,16 +19,12 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
-from app.config import get_settings
 from app.crud.audit_event import create_audit_event
 from app.crud.payment_plan import (
     get_payment_plan,
     get_installments_for_plan,
-    get_next_due_installment,
     mark_installment_paid,
     mark_installment_failed,
-    mark_installment_overdue,
-    count_installments_by_status,
     update_plan_status,
 )
 from app.crud.recovery_case import get_recovery_case
