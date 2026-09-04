@@ -32,6 +32,7 @@ from app.crud.conversation import (
 from app.models.conversation import Conversation, ConversationStatus
 from app.schemas.conversation import ConversationCreate
 from app.schemas.conversation_message import ConversationMessageCreate
+from app.schemas.intent import CustomerIntent
 from app.schemas.policy import PolicyInput
 from app.services.policy_engine import evaluate_single_action
 
@@ -517,7 +518,6 @@ def _process_inbound_text(
     # --- Step 2: Classify intent ---
     if _opted_out:
         from types import SimpleNamespace as _SimpleNS
-        from app.schemas.intent import CustomerIntent
         detected_intent = CustomerIntent.STOP_REQUEST
         intent_response = _SimpleNS(
             source="deterministic_opt_out",
