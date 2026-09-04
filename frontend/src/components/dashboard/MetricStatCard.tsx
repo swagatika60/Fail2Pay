@@ -45,7 +45,7 @@ export default function MetricStatCard({
         {value}
       </p>
       {subtitle ? (
-        <p className="mt-1 truncate text-[11px] text-slate-500">{subtitle}</p>
+        <p className="mt-1 line-clamp-2 text-[11px] leading-snug text-slate-500">{subtitle}</p>
       ) : null}
     </div>
   )

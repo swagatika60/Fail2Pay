@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import {
   MessageSquare,
   ShieldCheck,
@@ -18,7 +18,8 @@ import {
   XAxis,
   YAxis,
 } from "recharts"
-import { formatINR } from "../lib/format"
+import { formatINR, formatPercent } from "../lib/format"
+import { useDashboardStore } from "../hooks/dashboardStore"
 
 /**
  * Live Demo Sandbox — a 3-column interactive recovery console.
@@ -68,30 +69,49 @@ const SEED_CONVERSATION: ChatMessage[] = [
 const FOLLOW_UP: ChatMessage = {
   id: 4,
   direction: "outbound",
-  text: "Done! Part 1 confirmed. Part 2 is scheduled for +24h. Settlement link below — tap to complete. 🙏",
+  text: "Done! Part 1 confirmed. Part 2 is scheduled for +24h. Settlement link below — tap to complete.",
   card: "razorpay",
 }
-
-const MINI_TREND = [
-  { day: "Mon", amount: 214000 },
-  { day: "Tue", amount: 286000 },
-  { day: "Wed", amount: 231000 },
-  { day: "Thu", amount: 318000 },
-  { day: "Fri", amount: 297000 },
-  { day: "Sat", amount: 341000 },
-  { day: "Today", amount: 312000 },
-]
-
-const SETTLEMENTS = [
-  { id: 1, name: "Shobha Kulkarni", amount: "₹4,999", channel: "WhatsApp UPI" },
-  { id: 2, name: "Ramesh Patil", amount: "₹7,200", channel: "Razorpay Link" },
-  { id: 3, name: "Kavita Nambiar", amount: "₹11,999", channel: "EMI Part 2" },
-  { id: 4, name: "Arjun Deshmukh", amount: "₹3,850", channel: "WhatsApp UPI" },
-]
 
 export default function SimulationPage() {
   const [messages, setMessages] = useState<ChatMessage[]>(SEED_CONVERSATION)
   const [syncing, setSyncing] = useState(true)
+  const { map, ensureLoaded } = useDashboardStore()
+
+  useEffect(() => {
+    ensureLoaded().catch(() => {})
+  }, [ensureLoaded])
+
+  // Real metrics from the dashboard store (never hardcoded demo numbers).
+  const recoveredRevenue = map?.recovered_revenue ?? 0
+  const casesEngaged = map?.cases_count ?? 0
+  const yieldRate = formatPercent(map?.recovery_rate ?? 0)
+
+  // Last-7-days recovered-volume trend, derived from the real timeline.
+  const miniTrend = useMemo(
+    () =>
+      (map?.recovery_timeline ?? [])
+        .slice(-7)
+        .map((p) => ({
+          day: new Date(`${p.label}T00:00:00`).toLocaleDateString("en-IN", {
+            weekday: "short",
+          }),
+          amount: p.recovered,
+        })),
+    [map],
+  )
+
+  // Verified settlements by channel — real ledger numbers, not a scripted list.
+  const settlements = useMemo(
+    () =>
+      (map?.recovery_by_channel ?? []).map((c, i) => ({
+        id: i + 1,
+        name: c.name,
+        amount: formatINR(c.amount),
+        channel: `${c.count} verified payment${c.count === 1 ? "" : "s"}`,
+      })),
+    [map],
+  )
 
   const loadLiveScenario = () => {
     setMessages(SEED_CONVERSATION)
@@ -271,11 +291,11 @@ export default function SimulationPage() {
           />
 
           <div className="flex-1 space-y-4 overflow-y-auto p-4">
-            {/* KPI micro-cards */}
+            {/* KPI micro-cards — real dashboard numbers */}
             <div className="grid grid-cols-3 gap-2.5">
-              <KpiCard label="Cases Engaged" value="23" note="Active" tone="text-slate-100" />
-              <KpiCard label="Yield Rate" value="49.3%" note="Settled" tone="text-emerald-400" />
-              <KpiCard label="Recovered Revenue" value="₹3.12 L" note="Captured" tone="text-emerald-400" />
+              <KpiCard label="Cases Engaged" value={String(casesEngaged)} note="Active" tone="text-slate-100" />
+              <KpiCard label="Yield Rate" value={yieldRate} note="Settled" tone="text-emerald-400" />
+              <KpiCard label="Recovered Revenue" value={formatINR(recoveredRevenue)} note="Captured" tone="text-emerald-400" />
             </div>
 
             {/* Mini trend chart */}
@@ -287,8 +307,13 @@ export default function SimulationPage() {
                 </span>
               </div>
               <div className="h-24">
+                {miniTrend.length === 0 ? (
+                  <div className="flex h-full items-center justify-center text-[11px] text-slate-500">
+                    No recovered payments yet — run a simulation to populate.
+                  </div>
+                ) : (
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={MINI_TREND} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
+                  <AreaChart data={miniTrend} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
                     <defs>
                       <linearGradient id="miniSettled" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="0%" stopColor="#10b981" stopOpacity={0.35} />
@@ -302,7 +327,7 @@ export default function SimulationPage() {
                       tick={{ fill: "#64748b", fontSize: 9 }}
                       interval="preserveStartEnd"
                     />
-                    <YAxis hide domain={["dataMin - 20000", "dataMax + 20000"]} />
+                    <YAxis hide domain={["dataMin - 1000", "dataMax + 1000"]} />
                     <Tooltip
                       contentStyle={{
                         backgroundColor: "#0F172A",
@@ -325,6 +350,7 @@ export default function SimulationPage() {
                     />
                   </AreaChart>
                 </ResponsiveContainer>
+                )}
               </div>
             </div>
 
@@ -335,7 +361,12 @@ export default function SimulationPage() {
                 Recent Verified Settlements
               </div>
               <div className="space-y-2">
-                {SETTLEMENTS.map((s) => (
+                {settlements.length === 0 ? (
+                  <div className="rounded-lg border border-edge bg-panel-2 px-3 py-4 text-center text-[11px] text-slate-500">
+                    No verified settlements yet.
+                  </div>
+                ) : (
+                settlements.map((s) => (
                   <div
                     key={s.id}
                     className="flex items-center justify-between rounded-lg border border-edge bg-panel-2 px-3 py-2.5"
@@ -346,7 +377,7 @@ export default function SimulationPage() {
                     </div>
                     <span className="ml-2 text-xs font-semibold text-emerald-400">{s.amount}</span>
                   </div>
-                ))}
+                )))}
               </div>
             </div>
           </div>

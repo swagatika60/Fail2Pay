@@ -18,7 +18,6 @@ from app.config import get_settings
 from app.crud.audit_event import create_audit_event
 from app.crud.customer import create_customer, get_customer_by_external_id
 from app.crud.recovery_case import (
-    get_recovery_case,
     get_recovery_cases_by_status,
 )
 from app.crud.revenue_event import create_revenue_event, get_revenue_events_by_customer
@@ -89,8 +88,18 @@ def process_payment_failed(db: Session, payload: dict) -> dict:
     amount = payment.get("amount", 0)
     currency = payment.get("currency", "INR")
     status = payment.get("status", "failed")
-    failure_reason = payment.get("failure_reason", "Unknown")
-    failure_code = payment.get("failure_code", "")
+    # Razorpay reports *why* a payment failed in the payment entity's native
+    # error_description / error_reason / error_code fields. We also accept the
+    # repo-style failure_reason / failure_code keys (tests and legacy payloads).
+    # When Razorpay provides no reason, the fields stay empty — we never invent
+    # a failure reason; downstream copy falls back to graceful generic wording.
+    failure_reason = (
+        payment.get("failure_reason")
+        or payment.get("error_description")
+        or payment.get("error_reason")
+        or ""
+    )
+    failure_code = payment.get("failure_code") or payment.get("error_code") or ""
     method = payment.get("method", "")
 
     # customer info from payment
@@ -213,6 +222,20 @@ def process_payment_failed(db: Session, payload: dict) -> dict:
             max_attempts=max_attempts,
         ),
     )
+
+    # --- Step 4b: Persist failure context on the case ---
+    # Agent copy, matching email templates and the policy surfaces read the
+    # reason/root cause from ``case.extra_data`` — mirror the diagnosis onto the
+    # case (same convention as the mandate-drop and trigger-ingest paths) so
+    # they reflect the *real* reason instead of generic copy. Empty fields are
+    # kept out so absent reasons render as "—" rather than a placeholder.
+    extra = dict(recovery_case.extra_data or {})
+    if failure_reason:
+        extra["failure_reason"] = failure_reason
+    if failure_code:
+        extra["failure_code"] = failure_code
+    extra["root_cause"] = diagnosis.root_cause
+    recovery_case.extra_data = extra
 
     # --- Step 5: Set status to AT_RISK ---
     recovery_case.status = RecoveryStatus.AT_RISK
@@ -628,8 +651,17 @@ def process_mandate_auth_failed(db: Session, payload: dict) -> dict:
     subscription_id = auth.get("subscription_id", "")
     mandate_id = auth.get("id", "") or error.get("id", "")
     amount = error.get("amount", 0) or auth.get("amount", 0) or 0
-    failure_reason = error.get("failure_reason", "") or "mandate auth failed"
-    failure_code = error.get("failure_code", "") or "mandate_declined"
+    # Same no-invention rule as payment.failed: read repo-style keys first, then
+    # Razorpay-native error_* fields. When neither is present the fields stay
+    # empty — the ``mandate_drop`` trigger alone classifies the root cause and
+    # the copy layer degrades gracefully.
+    failure_reason = (
+        error.get("failure_reason")
+        or error.get("error_description")
+        or error.get("error_reason")
+        or ""
+    )
+    failure_code = error.get("failure_code") or error.get("error_code") or ""
 
     email = error.get("email", "") or auth.get("email", "")
     phone = error.get("contact", "") or auth.get("contact", "")

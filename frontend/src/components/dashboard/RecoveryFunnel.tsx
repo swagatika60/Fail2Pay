@@ -27,6 +27,10 @@ const TEXT_TONE: Record<string, string> = {
  * Horizontal, tapered revenue-conversion funnel. The bar width is proportional
  * to each stage's amount, so the shrinking silhouette reads as drop-off.
  * Only recovered money is verified; everything upstream is "at risk" in-train.
+ *
+ * Conversion is always money-based (stage amount ÷ previous stage amount) so
+ * stages must be nested sub-pools of the entering volume — otherwise the
+ * ratio would exceed 100% and mislead.
  */
 export function RecoveryFunnel({
   stages,
@@ -48,9 +52,11 @@ export function RecoveryFunnel({
     <div className="flex flex-col gap-3">
       {stages.map((stage, i) => {
         const prev = stages[i - 1]
+        // Money in ÷ money out of the previous stage. Stage amounts must be
+        // nested pools (see docstring) so this is always a sane 0-100% rate.
         const conversion = prev
-          ? prev.count > 0
-            ? (stage.count / prev.count) * 100
+          ? prev.amount > 0
+            ? (stage.amount / prev.amount) * 100
             : 0
           : null
         const widthPct = Math.max((stage.amount / maxAmount) * 100, 6)

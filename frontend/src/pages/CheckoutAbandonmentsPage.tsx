@@ -1,11 +1,9 @@
 import { useEffect, useMemo, useState } from "react"
-import { Link } from "react-router-dom"
 import type { CheckoutAbandonmentItem, CheckoutSummary } from "../types/operations"
 import { fetchCheckoutAbandonments, fetchCheckoutSummary } from "../services/operations"
 import { PageHeader } from "../components/ui/PageHeader"
 import { Card } from "../components/ui/Card"
 import { EmptyState } from "../components/ui/EmptyState"
-import { StatusBadge } from "../components/ui/Badge"
 import { SkeletonTable } from "../components/ui/Skeleton"
 import { formatINR, formatDateTime, initials } from "../lib/format"
 
@@ -119,7 +117,7 @@ export default function CheckoutAbandonmentsPage() {
 
       {/* Table */}
       {loading ? (
-        <SkeletonTable rows={5} cols={7} />
+        <SkeletonTable rows={5} />
       ) : filtered.length === 0 ? (
         <EmptyState
           title="No checkout abandonments"

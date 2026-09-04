@@ -35,6 +35,7 @@ import {
   Gauge,
   Landmark,
   Mail,
+  Phone,
 } from "lucide-react"
 import type {
   RecoveryCaseDetail,
@@ -43,6 +44,7 @@ import type {
   PolicyTrace,
   CaseSchedule,
   SentEmail,
+  VoiceCall,
 } from "../types/analytics"
 import {
   fetchRecoveryCaseDetail,
@@ -51,11 +53,15 @@ import {
   fetchCasePolicyTrace,
   fetchCaseSchedule,
   fetchCaseEmails,
+  fetchCaseVoiceCalls,
+  initiateVoiceCall,
   runAutonomousScheduler,
+  simulateSingleCase,
 } from "../services/analytics"
 import { simulateCustomerMessage, generateCaseEmail } from "../services/operations"
 import ConversationHistory from "../components/dashboard/ConversationHistory"
 import EmailHistory from "../components/dashboard/EmailHistory"
+import VoiceCallsPanel from "../components/dashboard/VoiceCallsPanel"
 import PolicyTraceInspector from "../components/dashboard/PolicyTraceInspector"
 import AgentThoughtStream from "../components/dashboard/AgentThoughtStream"
 import ComplianceDrawer from "../components/dashboard/ComplianceDrawer"
@@ -894,12 +900,16 @@ export default function RecoveryCasePage() {
   const [detail, setDetail] = useState<RecoveryCaseDetail | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [httpStatus, setHttpStatus] = useState<number | null>(null)
 
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [promises, setPromises] = useState<PaymentPromise[]>([])
   const [policyTrace, setPolicyTrace] = useState<PolicyTrace | null>(null)
   const [schedule, setSchedule] = useState<CaseSchedule | null>(null)
   const [emails, setEmails] = useState<SentEmail[]>([])
+  const [voiceCalls, setVoiceCalls] = useState<VoiceCall[]>([])
+  const [callingVoice, setCallingVoice] = useState(false)
+  const [voiceMessage, setVoiceMessage] = useState<string | null>(null)
 
   const [showPolicyTrace, setShowPolicyTrace] = useState(false)
   const [showCompliance, setShowCompliance] = useState(false)
@@ -912,9 +922,19 @@ export default function RecoveryCasePage() {
   useEffect(() => {
     if (!caseId) return
     setLoading(true)
+    setError(null)
+    setHttpStatus(null)
     fetchRecoveryCaseDetail(caseId, { bypass: true })
       .then(setDetail)
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)))
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        // Extract HTTP status from the error message if present
+        const statusMatch = msg.match(/\(HTTP (\d+)\)/)
+        const status = statusMatch ? parseInt(statusMatch[1], 10) : null
+        console.error(`[CasePage] Failed to load case ${caseId}:`, msg)
+        setError(msg)
+        setHttpStatus(status)
+      })
       .finally(() => setLoading(false))
   }, [caseId])
 
@@ -925,6 +945,7 @@ export default function RecoveryCasePage() {
     fetchCasePolicyTrace(caseId).then(setPolicyTrace).catch(console.error)
     fetchCaseSchedule(caseId).then(setSchedule).catch(console.error)
     fetchCaseEmails(caseId).then(setEmails).catch(console.error)
+    fetchCaseVoiceCalls(caseId).then(setVoiceCalls).catch(console.error)
   }, [caseId])
 
   const refreshAll = useCallback((bypass: boolean) => {
@@ -935,6 +956,7 @@ export default function RecoveryCasePage() {
     fetchCasePolicyTrace(caseId).then(setPolicyTrace).catch(console.error)
     fetchCaseSchedule(caseId).then(setSchedule).catch(console.error)
     fetchCaseEmails(caseId).then(setEmails).catch(console.error)
+    fetchCaseVoiceCalls(caseId).then(setVoiceCalls).catch(console.error)
   }, [caseId])
 
   useEffect(() => { if (status === "open") refreshAll(false) }, [status, refreshAll])
@@ -969,6 +991,31 @@ export default function RecoveryCasePage() {
     } catch { /* non-fatal */ } finally { setGenerating(false) }
   }
 
+  const handleInitiateVoiceCall = async () => {
+    if (!caseId || !detail?.customer_phone) return
+    setCallingVoice(true)
+    setVoiceMessage(null)
+    try {
+      const language =
+        typeof detail.extra_data?.language === "string"
+          ? detail.extra_data.language
+          : "en"
+      const res = await initiateVoiceCall(caseId, detail.customer_phone, language)
+      if (res.status === "blocked") {
+        setVoiceMessage(`Call blocked: ${res.reason ?? res.stop_condition ?? "hard stop"}`)
+      } else if (res.status === "initiated") {
+        setVoiceMessage("Outbound call initiated.")
+      } else {
+        setVoiceMessage(`Status: ${res.status}`)
+      }
+      refreshAll(true)
+    } catch (err) {
+      setVoiceMessage(err instanceof Error ? err.message : "Failed to initiate call")
+    } finally {
+      setCallingVoice(false)
+    }
+  }
+
   const simulate = async (trigger: string, options?: { message?: string; promiseDate?: string }) => {
     if (!caseId) return
     setGenerating(true)
@@ -994,14 +1041,56 @@ export default function RecoveryCasePage() {
     </div>
   )
 
+  const handleReSimulate = async () => {
+    try {
+      const result = await simulateSingleCase()
+      window.location.href = `/case/${result.case_id}`
+    } catch {
+      console.error("[CasePage] Re-simulation failed")
+    }
+  }
+
   if (error || !detail) return (
     <div className="flex min-h-[60vh] items-center justify-center bg-canvas">
-      <div className="rounded-xl border border-danger/20 bg-danger-soft p-6 text-center">
-        <p className="text-sm font-semibold text-danger">Case not found</p>
+      <div className="max-w-md rounded-xl border border-danger/20 bg-danger-soft p-6 text-center">
+        <AlertTriangle className="mx-auto h-8 w-8 text-danger" aria-hidden="true" />
+        <p className="mt-3 text-sm font-semibold text-danger">Case not found</p>
         <p className="mt-1 text-xs text-ink-faint">{error || "Invalid ID"}</p>
-        <Link to="/dashboard" className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-edge bg-panel px-3 py-1.5 text-xs text-ink-muted transition-colors hover:bg-elevated hover:text-ink">
-          <ArrowLeft className="h-3 w-3" />Dashboard
-        </Link>
+        {httpStatus && (
+          <p className="mt-1 font-mono text-[10px] text-ink-faint">
+            HTTP {httpStatus} — {httpStatus === 404 ? "ID does not exist in the database" : "Server error"}
+          </p>
+        )}
+        {httpStatus === 404 && caseId && (
+          <p className="mt-2 text-[11px] text-ink-muted">
+            This may be a client-side mock case that was never persisted.
+            Create a new real case to continue.
+          </p>
+        )}
+        <div className="mt-4 flex items-center justify-center gap-2">
+          <Link
+            to="/cases"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-edge bg-panel px-3 py-1.5 text-xs text-ink-muted transition-colors hover:bg-elevated hover:text-ink"
+          >
+            <ArrowLeft className="h-3 w-3" />All Cases
+          </Link>
+          <Link
+            to="/dashboard"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-edge bg-panel px-3 py-1.5 text-xs text-ink-muted transition-colors hover:bg-elevated hover:text-ink"
+          >
+            Dashboard
+          </Link>
+          {httpStatus === 404 && (
+            <button
+              type="button"
+              onClick={handleReSimulate}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-royal/40 bg-royal-soft px-3 py-1.5 text-xs font-medium text-royal transition-colors hover:bg-royal/15"
+            >
+              <RefreshCw className="h-3 w-3" />
+              Create Demo Case
+            </button>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -1098,6 +1187,41 @@ export default function RecoveryCasePage() {
                 <EmailHistory
                   emails={emails}
                   onGenerateEmail={handleGenerateEmail}
+                />
+              </div>
+            </section>
+
+            {/* Voice recovery — same case, same stop rules as WhatsApp/email */}
+            <section className="card-sheen rounded-xl" aria-label="Voice calls">
+              <div className="flex items-center justify-between border-b border-edge px-4 py-2.5">
+                <div className="flex items-center gap-2">
+                  <Phone className="h-3.5 w-3.5 text-emerald-400" aria-hidden="true" />
+                  <h2 className="text-[12px] font-medium text-ink">Voice Calls</h2>
+                  {voiceCalls.length > 0 && (
+                    <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-300">
+                      {voiceCalls.length}
+                    </span>
+                  )}
+                </div>
+                {!terminal && detail.customer_phone && (
+                  <button
+                    type="button"
+                    onClick={handleInitiateVoiceCall}
+                    disabled={callingVoice}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5 text-[11px] font-medium text-emerald-300 transition-colors hover:bg-emerald-500/15 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <Phone className="h-3 w-3" aria-hidden="true" />
+                    {callingVoice ? "Initiating…" : "Initiate outbound call"}
+                  </button>
+                )}
+              </div>
+              <div className="max-h-72 overflow-y-auto p-4 scrollbar-thin scrollbar-thumb-slate-800">
+                <VoiceCallsPanel
+                  calls={voiceCalls}
+                  canInitiate={!terminal && Boolean(detail.customer_phone)}
+                  busy={callingVoice}
+                  onInitiate={handleInitiateVoiceCall}
+                  message={voiceMessage}
                 />
               </div>
             </section>

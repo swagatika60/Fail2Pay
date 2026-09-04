@@ -80,6 +80,20 @@ export default function RevenueMapPage() {
 
   const stages = useMemo(() => (map ? buildStages(map) : []), [map])
 
+  // Verified money is counted in captured Payment rows, but recovery is
+  // measured per case — one case can settle across several captured
+  // payments. Surface both so the two counts are never conflated.
+  const { paymentsCount, recoveredCases } = useMemo(() => {
+    if (!map) return { paymentsCount: 0, recoveredCases: 0 }
+    const recoveredStage = (map.recovery_pipeline ?? []).find(
+      (s) => s.stage === "RECOVERED",
+    )
+    return {
+      paymentsCount: map.payments_count ?? 0,
+      recoveredCases: recoveredStage?.count ?? map.payments_count ?? 0,
+    }
+  }, [map])
+
   return (
     <div className="mx-auto max-w-[1400px] px-6 py-6">
       {/* Page header */}
@@ -136,7 +150,11 @@ export default function RevenueMapPage() {
             <MetricStatCard
               label="Verified Recovered"
               value={formatINR(map.recovered_revenue)}
-              subtitle={`${map.payments_count} captured payments`}
+              subtitle={
+                recoveredCases === paymentsCount
+                  ? `${paymentsCount} captured payments · ${recoveredCases} recovered cases`
+                  : `${paymentsCount} captured payments across ${recoveredCases} recovered cases`
+              }
               tone="emerald"
               icon={<CheckCircle2 className="h-3.5 w-3.5" />}
             />

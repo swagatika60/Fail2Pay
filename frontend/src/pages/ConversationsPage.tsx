@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { Link } from "react-router-dom"
+import { Ban, MessageSquare } from "lucide-react"
 import type { ConversationListItem } from "../types/operations"
 import { fetchConversationsList } from "../services/operations"
 import { PageHeader } from "../components/ui/PageHeader"
@@ -121,7 +122,7 @@ export default function ConversationsPage() {
         <Card className="p-6 text-center text-red-400">{error}</Card>
       ) : filtered.length === 0 ? (
         <EmptyState
-          icon="💬"
+          icon={MessageSquare}
           title="No conversations yet"
           description="Customer replies to recovery messages will appear here."
         />
@@ -180,7 +181,7 @@ export default function ConversationsPage() {
                   <div className="border-t border-edge">
                     {conv.case_status === "STOPPED" && (
                       <div className="flex items-center gap-2 border-b border-red-800 bg-red-500/10 px-5 py-2.5">
-                        <span className="text-sm">🛑</span>
+                        <Ban className="h-4 w-4 shrink-0 text-red-400" />
                         <span className="text-xs text-red-300">
                           STOPPED (User Opt-Out) · Policy Guardrail: Opt-out
                           detected. All automated outreach and retries halted

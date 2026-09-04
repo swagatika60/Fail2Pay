@@ -11,7 +11,7 @@ Recovery strategy is deterministic — AI is never in the loop for actions.
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 

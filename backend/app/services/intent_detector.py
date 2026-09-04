@@ -21,7 +21,6 @@ import json
 import logging
 import re
 import time
-from functools import lru_cache
 from typing import Protocol
 
 import httpx
@@ -39,6 +38,33 @@ from app.schemas.intent import (
 logger = logging.getLogger(__name__)
 
 # --- AI Provider Abstraction ---
+
+# Google's OpenAI-compatible endpoint (works with Gemini API keys).
+GOOGLE_GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+# Gemini API keys issued by Google AI Studio start with these prefixes.
+GOOGLE_KEY_PREFIXES = ("AIza", "AQ.")
+DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+
+
+def resolve_ai_provider_config(settings) -> tuple[str, str, str]:
+    """Resolve (api_key, model, base_url) from settings with auto-detection.
+
+    An explicit ``AI_BASE_URL`` always wins. When it is unset, Google-issued
+    keys (``AIza…``/``AQ.…`` — Gemini API keys) route to Google's
+    OpenAI-compatible endpoint with a Gemini model; everything else uses the
+    OpenAI API. An explicit ``AI_MODEL`` is always respected.
+    """
+    api_key = (getattr(settings, "ai_api_key", "") or "").strip()
+    base_url = (getattr(settings, "ai_base_url", "") or "").strip()
+    model = (getattr(settings, "ai_model", "") or "").strip()
+    is_google_key = api_key.startswith(GOOGLE_KEY_PREFIXES)
+    if not base_url and is_google_key:
+        base_url = GOOGLE_GEMINI_OPENAI_BASE_URL
+        if not model or model == DEFAULT_OPENAI_MODEL:
+            # The model was never explicitly set → pick a Gemini model.
+            model = DEFAULT_GEMINI_MODEL
+    return api_key, model or DEFAULT_OPENAI_MODEL, base_url or "https://api.openai.com/v1"
 
 
 class AIProvider(Protocol):
@@ -82,6 +108,34 @@ class OpenAIProvider:
         data = response.json()
         return data["choices"][0]["message"]["content"]
 
+    def complete(self, system_prompt: str, user_message: str, timeout: float = 5.0, max_tokens: int = 400) -> str:
+        """Send a plain-text completion request (no JSON response format).
+
+        Used by the AI Assist layer for free-form natural-language output
+        (reply personalization, failure-reason explanations).
+        """
+        url = f"{self.base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            "temperature": 0.4,  # Low enough for consistent tone, high enough to feel human
+            "max_tokens": max_tokens,
+        }
+
+        with httpx.Client(timeout=timeout) as client:
+            response = client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+
+        data = response.json()
+        return data["choices"][0]["message"]["content"]
+
 
 class MockAIProvider:
     """Mock AI provider for testing."""
@@ -92,6 +146,12 @@ class MockAIProvider:
         self.call_count = 0
 
     def classify(self, system_prompt: str, user_message: str, timeout: float = 10.0) -> str:
+        self.call_count += 1
+        if self._should_fail:
+            raise RuntimeError("AI provider unavailable")
+        return self._response
+
+    def complete(self, system_prompt: str, user_message: str, timeout: float = 10.0, max_tokens: int = 400) -> str:
         self.call_count += 1
         if self._should_fail:
             raise RuntimeError("AI provider unavailable")
@@ -124,13 +184,16 @@ Rules:
 - Same rules for ALL languages (English, Hindi, Hinglish, Odia)
 - Be conservative: high confidence (>0.8) only when clear
 - You ONLY classify — never take actions or generate links
+- Aliases are accepted and normalized: PAYMENT_NOW->PAY_NOW, PAYMENT_FAILED->PAYMENT_RETRY_REQUEST, SPLIT_PAYMENT->SPLIT_EMI, EMI/PAYMENT_PLAN->PAYMENT_PLAN_REQUEST, NEED_HELP->SUPPORT, NOT_INTERESTED->NEGATIVE, STOP_CONTACT->STOP_REQUEST, OTHER->UNCLEAR
 
 Examples:
 "hyy" → GREETING 0.9 | "pay now" → PAY_NOW 0.95 | "2 installments mein" → SPLIT_EMI 0.9
 "Kal payment" → PROMISE_TO_PAY 0.85 | "link bhejo" → PAYMENT_LINK_REQUEST 0.9
 "stop messaging" → STOP_REQUEST 0.95 | "talk to support" → SUPPORT 0.95
 "baad mein" → PAY_LATER 0.85 | "pehle kar diya" → ALREADY_PAID 0.9
-"dobara pay" → PAYMENT_RETRY_REQUEST 0.9 | "why charged" → QUESTION 0.85"""
+"dobara pay" → PAYMENT_RETRY_REQUEST 0.9 | "why charged" → QUESTION 0.85
+"I can pay 2000 today" → PAY_NOW 0.9 | "I'll pay tomorrow" → PROMISE_TO_PAY 0.9
+"i don't have the full amount right now" → PAYMENT_PLAN_REQUEST 0.9"""
 
 
 # --- Deterministic Rule-Based Fallback ---
@@ -159,6 +222,11 @@ def _rule_based_classify(message: str, language: str = "en") -> IntentDetectionR
     if patterns.negative and any(re.search(p, msg_lower) for p in patterns.negative):
         return IntentDetectionResult(intent=CustomerIntent.NEGATIVE, confidence=0.80)
 
+    # Pay-now patterns (checked before promise so "i'll pay now" reads as an
+    # immediate payment intent, not a deferred one).
+    if patterns.pay_now and any(re.search(p, msg_lower) for p in patterns.pay_now):
+        return IntentDetectionResult(intent=CustomerIntent.PAY_NOW, confidence=0.85)
+
     # Promise to pay patterns
     if patterns.promise_to_pay and any(re.search(p, msg_lower) for p in patterns.promise_to_pay):
         return IntentDetectionResult(intent=CustomerIntent.PROMISE_TO_PAY, confidence=0.75)
@@ -180,7 +248,11 @@ def _rule_based_classify(message: str, language: str = "en") -> IntentDetectionR
         return IntentDetectionResult(intent=CustomerIntent.PAYMENT_PLAN_REQUEST, confidence=0.80)
 
     # Support handoff patterns (checked before question to avoid false positives)
-    _support_re = re.compile(r"\b(support|human|agent|representative|customer\s*service|speak\s*to|talk\s*to)\b", re.IGNORECASE)
+    _support_re = re.compile(
+        r"\b(support|human|agent|representative|customer\s*service|speak\s*to|talk\s*to|"
+        r"need\s*help|madad)\b",
+        re.IGNORECASE,
+    )
     if _support_re.search(msg_lower):
         return IntentDetectionResult(intent=CustomerIntent.SUPPORT, confidence=0.85)
 
@@ -287,9 +359,11 @@ def detect_intent(
 
     if provider is None and settings.ai_api_key:
         try:
+            _api_key, _model, _base_url = resolve_ai_provider_config(settings)
             provider = OpenAIProvider(
-                api_key=settings.ai_api_key,
-                model=getattr(settings, "ai_model", "gpt-4o-mini"),
+                api_key=_api_key,
+                model=_model,
+                base_url=_base_url,
             )
         except Exception as e:
             logger.error("Failed to initialize AI provider: %s", str(e))

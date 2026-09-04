@@ -78,6 +78,16 @@ RECOVERY_INTENT_ALIASES: dict[str, CustomerIntent] = {
     "NEGATIVE": CustomerIntent.NEGATIVE,
     "STOP_REQUEST": CustomerIntent.STOP_REQUEST,
     "UNCLEAR": CustomerIntent.UNCLEAR,
+    # Recovery Agent challenge taxonomy (normalized to the canonical intents)
+    "PAYMENT_NOW": CustomerIntent.PAY_NOW,
+    "PAYMENT_FAILED": CustomerIntent.PAYMENT_RETRY_REQUEST,
+    "SPLIT_PAYMENT": CustomerIntent.SPLIT_EMI,
+    "EMI": CustomerIntent.PAYMENT_PLAN_REQUEST,
+    "PAYMENT_PLAN": CustomerIntent.PAYMENT_PLAN_REQUEST,
+    "NEED_HELP": CustomerIntent.SUPPORT,
+    "NOT_INTERESTED": CustomerIntent.NEGATIVE,
+    "STOP_CONTACT": CustomerIntent.STOP_REQUEST,
+    "OTHER": CustomerIntent.UNCLEAR,
 }
 
 # Intents that should trigger a payment card widget in the UI.

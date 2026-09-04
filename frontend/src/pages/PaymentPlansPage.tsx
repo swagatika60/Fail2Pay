@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
+import { CalendarDays } from "lucide-react"
 import { fetchPaymentPlansList } from "../services/operations"
 import type { PaymentPlan, PlanPreset, PlanSortDir, PlanSortKey } from "../components/payment-plans/types"
 import { planRiskScore, toPaymentPlan } from "../components/payment-plans/types"
@@ -137,7 +138,7 @@ export default function PaymentPlansPage() {
         </Card>
       ) : filtered.length === 0 ? (
         <EmptyState
-          icon="📅"
+          icon={CalendarDays}
           title={
             plans.length === 0 ? "No payment plans yet" : "No plans match filters"
           }

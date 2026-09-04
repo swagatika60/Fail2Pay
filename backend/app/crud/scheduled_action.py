@@ -5,7 +5,6 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.models.scheduled_action import ScheduledAction
-from app.schemas.scheduled_action import ScheduledActionCreate
 
 
 def create_scheduled_action(

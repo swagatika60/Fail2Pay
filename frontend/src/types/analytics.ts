@@ -202,6 +202,19 @@ export interface Conversation {
   messages: ConversationMessage[]
 }
 
+export interface VoiceCall {
+  id: string
+  call_sid: string
+  direction: string
+  duration_seconds: number
+  transcription: string
+  intent: string
+  dtmf_input: string
+  language: string
+  status: string
+  created_at: string | null
+}
+
 export interface SentEmail {
   id: string
   email_type: string

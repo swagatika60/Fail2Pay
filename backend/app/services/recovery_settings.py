@@ -20,7 +20,7 @@ from app.schemas.settings import (
 DEFAULT_MERCHANT_ID = "default"
 
 DEFAULT_SETTINGS = {
-    "max_recovery_attempts": 5,
+    "max_recovery_attempts": 8,
     "recovery_window_days": 14,
     "whatsapp_enabled": True,
     "email_enabled": True,

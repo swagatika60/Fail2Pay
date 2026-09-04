@@ -65,8 +65,12 @@ export default function RecoveryPipelineTracker({
                 >
                   {formatINR(stage.amount)}
                 </p>
-                <p className="mt-1 text-[10px] tabular-nums text-zinc-500">
-                  {stage.count > 0 ? `${stage.count.toLocaleString("en-IN")} cases` : "\u00a0"}
+                <p
+                  className={`mt-1 text-[10px] tabular-nums ${
+                    stage.count > 0 ? "text-zinc-500" : "text-zinc-600"
+                  }`}
+                >
+                  {stage.count.toLocaleString("en-IN")} cases
                 </p>
               </div>
             </div>

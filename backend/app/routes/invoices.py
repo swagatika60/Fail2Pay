@@ -17,7 +17,6 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.crud.invoice import get_invoice as get_invoice_by_id, get_invoice_by_token
-from app.schemas.invoice import InvoiceAccessResponse, InvoiceRead
 from app.services.invoice import (
     access_invoice_by_token,
     create_recovery_invoice,

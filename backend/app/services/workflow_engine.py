@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from app.crud.audit_event import create_audit_event
-from app.crud.recovery_case import get_recovery_case, update_recovery_case_status
+from app.crud.recovery_case import get_recovery_case
 from app.models.recovery_case import RecoveryCase, RecoveryStatus
 from app.schemas.audit_event import AuditEventCreate
 

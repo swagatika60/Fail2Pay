@@ -19,7 +19,6 @@ from sqlalchemy.orm import Session
 
 from app.crud.audit_event import create_audit_event
 from app.crud.revenue_event import get_revenue_events_by_customer
-from app.models.recovery_case import RecoveryStatus
 from app.schemas.audit_event import AuditEventCreate
 from app.schemas.risk_assessment import RiskAssessment
 
@@ -224,7 +223,6 @@ def _assess_repeated_payment_failure(
     - LOW risk if this is the 1st (shouldn't normally happen, but handle it)
     - Not recoverable if >= 5 failures (customer is unlikely to pay)
     """
-    from app.models.revenue_event import RevenueEvent
     from uuid import UUID as _UUID
 
     # Count past failures for this customer

@@ -31,8 +31,7 @@ from app.crud.invoice import (
     update_invoice_delivery,
 )
 from app.crud.recovery_case import get_recovery_case
-from app.models.invoice import InvoiceStatus, generate_secure_token
-from app.schemas.invoice import InvoiceCreate, InvoiceAccessResponse
+from app.schemas.invoice import InvoiceCreate
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +113,6 @@ def create_recovery_invoice(
     # Set token expiry
     invoice.token_expires_at = datetime.now(timezone.utc) + timedelta(hours=TOKEN_EXPIRY_HOURS)
     invoice.issued_at = datetime.now(timezone.utc)
-    from sqlalchemy.orm import Session as SessionType
     db.commit()
     db.refresh(invoice)
 

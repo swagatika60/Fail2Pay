@@ -295,6 +295,13 @@ def persist_agent_reply(
     db.commit()
     db.refresh(msg)
 
+    # Every outbound agent bubble is an audit event (MESSAGE_SENT) so the
+    # policy trace / timeline show the full message thread, not just state
+    # changes.
+    from app.services.audit_logger import log_message_sent
+
+    log_message_sent(db, case.id, channel=channel)
+
     # Push the Agent reply to live audit dashboards via WebSocket so it appears
     # in the live feed without a page reload.
     from app.services.realtime import publish_message_event

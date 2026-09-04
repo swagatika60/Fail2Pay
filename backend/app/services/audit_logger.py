@@ -19,9 +19,7 @@ RECOVERY_STOPPED, RECOVERY_EXPIRED, AI_ERROR, EXTERNAL_API_ERROR
 
 import logging
 import uuid
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
 
 from sqlalchemy.orm import Session
 

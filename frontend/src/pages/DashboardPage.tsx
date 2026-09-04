@@ -1,6 +1,6 @@
 import { memo, useMemo, useState } from "react"
-import { Link } from "react-router-dom"
-import { Zap, TrendingUp, ShieldAlert, Clock3 } from "lucide-react"
+import { Link, useNavigate } from "react-router-dom"
+import { Zap, TrendingUp, ShieldAlert, Clock3, Info } from "lucide-react"
 import {
   Area,
   AreaChart,
@@ -25,6 +25,7 @@ import {
   type FilterState,
 } from "../components/dashboard/DashboardFilters"
 import { formatMoney, formatPercent, formatFullMoney } from "../lib/format"
+import type { RecoveryCaseSummary } from "../types/analytics"
 import type { CSSProperties } from "react"
 
 const TOOLTIP_STYLE: CSSProperties = {
@@ -74,7 +75,6 @@ export default function DashboardPage() {
   const currency = filters.currency
 
   const money = (amount: number) => formatMoney(amount, currency)
-  const moneyFull = (amount: number) => formatFullMoney(amount, currency)
 
   const needsAttention = useMemo(() => {
     return cases
@@ -96,58 +96,144 @@ export default function DashboardPage() {
       .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))
   }, [cases, filters.range])
 
-  const openCaseCount = useMemo(
-    () => cases.filter((c) => OPEN_STATUSES.has(c.status)).length,
+  // ------------------------------------------------------------------
+  // Active-case definitions (reconciled):
+  //   open          = any OPEN_STATUSES case
+  //   open backlog  = open case with ZERO attempts (never contacted)
+  //   engaged       = open case recovery has actually touched (attempts,
+  //                   captured money, promise, plan, …)
+  // The two buckets always add back up to the open count, so the KPI
+  // cards, cadence panel and pipeline never disagree about "active".
+  // ------------------------------------------------------------------
+  const openCases = useMemo(
+    () => cases.filter((c) => OPEN_STATUSES.has(c.status)),
+    [cases],
+  )
+  const openCaseCount = openCases.length
+
+  const backlogCases = useMemo(
+    () =>
+      openCases.filter(
+        (c) => (c.attempt_count ?? 0) === 0 && (c.recovered_amount ?? 0) === 0,
+      ),
+    [openCases],
+  )
+  const engagedCases = useMemo(
+    () => openCases.filter((c) => !backlogCases.includes(c)),
+    [openCases, backlogCases],
+  )
+
+  const sumOf = (list: RecoveryCaseSummary[], pick: (c: RecoveryCaseSummary) => number) =>
+    list.reduce((acc, c) => acc + (pick(c) || 0), 0)
+  const backlogRemaining = useMemo(
+    () => sumOf(backlogCases, (c) => c.remaining_amount),
+    [backlogCases],
+  )
+  const engagedRemaining = useMemo(
+    () => sumOf(engagedCases, (c) => c.remaining_amount),
+    [engagedCases],
+  )
+
+  const backlogCount = backlogCases.length
+  const engagedCount = engagedCases.length
+
+  // Pipeline sub-populations (money-matched): the attempted pool is every
+  // case the engine engaged (attempts or a captured payment); the verified
+  // pool is every case that holds at least one captured payment.
+  const attemptedCaseCount = useMemo(
+    () =>
+      cases.filter(
+        (c) => (c.attempt_count ?? 0) > 0 || (c.recovered_amount ?? 0) > 0,
+      ).length,
+    [cases],
+  )
+  const paidCaseCount = useMemo(
+    () => cases.filter((c) => (c.recovered_amount ?? 0) > 0).length,
     [cases],
   )
 
-  // Sparklines derived from the verified cumulative timeline.
+  // Sparklines ----------------------------------------------------------
+  // Verified cumulative capture (ascending green) for the recovered card.
   const sparkSeries = useMemo(() => {
     const ts = (map?.recovery_timeline ?? []).filter(
       (d) => d.label <= TODAY_ISO,
     )
     return {
-      recovered: ts.map((d) => d.recovered),
       cumulative: ts.map((d) => d.cumulative),
-      atRisk: ts.map((_, i) => Math.max(ts[i]?.cumulative ?? 0, 0)),
     }
   }, [map])
 
-  // Conversion funnel: entered at risk -> engaged/promised -> recovered.
+  // 7-day rolling average of daily verified capture volume — a meaningful
+  // trend line instead of the raw day-to-day spikes.
+  const rollingRecovered = useMemo(() => {
+    const daily = (map?.recovery_timeline ?? [])
+      .filter((d) => d.label <= TODAY_ISO)
+      .map((d) => d.recovered)
+    if (daily.length < 2) return []
+    const out: number[] = []
+    for (let i = 0; i < daily.length; i++) {
+      const from = Math.max(0, i - 6)
+      const window = daily.slice(from, i + 1)
+      out.push(window.reduce((a, b) => a + b, 0) / window.length)
+    }
+    return out
+  }, [map])
+
+  // At-risk exposure accrual: cumulative original volume of failures as
+  // they arrived (stepped). Deliberately NOT the recovery curve — this
+  // reads as the growing backlog of exposure, not money coming back.
+  const riskSeries = useMemo(() => {
+    const byDay = new Map<string, number>()
+    for (const c of cases) {
+      const day = (c.created_at || "").slice(0, 10)
+      if (!day) continue
+      byDay.set(day, (byDay.get(day) ?? 0) + (c.original_amount || 0))
+    }
+    const days = [...byDay.keys()].sort()
+    let acc = 0
+    return days.map((day) => {
+      acc += byDay.get(day) ?? 0
+      return acc
+    })
+  }, [cases])
+
+  // Conversion funnel: nested money pools so stage-to-stage conversion is a
+  // genuine 0-100% rate. Total failed volume → pool the engine engaged →
+  // verified captured money. Promises/plans live in the cadence panel.
   const funnel = useMemo<FunnelStage[]>(() => {
     if (!map) return []
-    const promised = map.promise_to_pay_recovery?.promised_amount ?? 0
-    const planTotal = map.payment_plan_recovery?.total_amount ?? 0
     return [
       {
-        key: "entered",
-        label: "Entered recovery",
-        amount: map.at_risk_revenue,
+        key: "failed",
+        label: "Total failed volume",
+        amount: map.total_revenue,
         count: map.cases_count ?? 0,
-        tone: "amber",
+        tone: "slate",
       },
       {
-        key: "active",
-        label: "Active / Promised",
-        amount: promised + planTotal,
-        count: (map.promise_to_pay_recovery?.promised_cases ?? 0) +
-          (map.payment_plan_recovery?.plans_count ?? 0),
-        tone: "default",
+        key: "engaged",
+        label: "Engaged / In recovery",
+        amount: map.attempted_recovery,
+        count: attemptedCaseCount,
+        tone: "amber",
       },
       {
         key: "recovered",
         label: "Verified recovered",
         amount: map.recovered_revenue,
-        count: map.payments_count ?? 0,
+        count: paidCaseCount,
         tone: "emerald",
       },
     ]
-  }, [map])
+  }, [map, attemptedCaseCount, paidCaseCount])
 
-  const triggerMockFailureWebhook = () => {
+  const navigate = useNavigate()
+  const triggerMockFailureWebhook = async () => {
     const base = Math.max(map?.at_risk_revenue ?? 0, 500000)
     const amount = Math.round(base * 0.1) + Math.floor(Math.random() * 300000)
-    simulatePaymentFailure(amount)
+    const caseId = await simulatePaymentFailure(amount)
+    // Navigate to the newly created case if we got a real case ID
+    if (caseId) navigate(`/case/${caseId}`)
   }
 
   if (loading) {
@@ -226,7 +312,8 @@ export default function DashboardPage() {
           label="Revenue recovered"
           value={money(map.recovered_revenue)}
           delta={recoveredDelta}
-          context={`${map.payments_count} captured payments`}
+          context={`${map.payments_count} captured payments · ${paidCaseCount} recovered cases`}
+          hint={`Verified captured revenue (${money(map.recovered_revenue)}) across ${map.payments_count} captured payments. Messages and promises are never counted.`}
           spark={sparkSeries.cumulative}
           icon={<TrendingUp className="h-4 w-4" />}
           tone="emerald"
@@ -235,16 +322,18 @@ export default function DashboardPage() {
           label="Recovery rate"
           value={formatPercent(map.recovery_rate)}
           delta={rateDelta}
-          context={`${money(map.attempted_recovery)} engaged`}
-          spark={sparkSeries.recovered}
+          context={`${money(map.recovered_revenue)} captured of ${money(map.total_revenue)} failed`}
+          hint={`Recovery rate = verified recovered (${money(map.recovered_revenue)}) ÷ total failed volume (${money(map.total_revenue)}). Sparkline shows the 7-day rolling average of daily verified capture volume.`}
+          spark={rollingRecovered}
           icon={<TrendingUp className="h-4 w-4" />}
         />
         <MetricCard
           label="Revenue at risk"
           value={money(map.at_risk_revenue)}
-          delta={{ direction: "flat", label: `${openCaseCount} open cases`, favorable: false }}
-          context="Current exposure, not yet engaged"
-          spark={sparkSeries.atRisk}
+          delta={{ direction: "flat", label: `${openCaseCount} open · ${backlogCount} unengaged`, favorable: false }}
+          context={`${backlogCount} unengaged (${money(backlogRemaining)}) · ${engagedCount} in recovery (${money(engagedRemaining)})`}
+          hint={`Open exposure split by engagement: ${backlogCount} unengaged (never contacted) and ${engagedCount} in recovery (outreach sent / in conversation). Sparkline shows cumulative failed volume as it arrived — not the recovery curve.`}
+          spark={riskSeries}
           icon={<ShieldAlert className="h-4 w-4" />}
           tone="amber"
         />
@@ -257,24 +346,31 @@ export default function DashboardPage() {
             favorable: true,
           }}
           context="Mean from failure to verified capture"
+          hint="Days from the failed payment to the first verified captured payment, averaged across recovered cases."
           icon={<Clock3 className="h-4 w-4" />}
         />
       </div>
 
-      {/* Self-cure baseline */}
+      {/* Self-cure baseline — its own banner, visually separate from the KPIs */}
       {summary.self_cure_count > 0 && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800/80 bg-slate-900/40 px-5 py-3">
-          <div className="flex items-center gap-2.5">
-            <span className="flex h-6 w-6 items-center justify-center rounded-md bg-emerald-500/10 text-emerald-400">
-              <TrendingUp className="h-3.5 w-3.5" />
+        <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2.5 rounded-xl border border-dashed border-emerald-800/40 bg-gradient-to-r from-emerald-950/50 via-emerald-950/20 to-transparent px-5 py-3.5">
+          <div className="flex items-center gap-3">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-emerald-800/40 bg-emerald-900/30 text-emerald-400">
+              <TrendingUp className="h-4 w-4" />
             </span>
-            <span className="text-xs font-semibold text-slate-200">Self-cure baseline</span>
+            <div>
+              <p className="text-xs font-semibold text-emerald-200">Self-cure baseline</p>
+              <p className="text-[11px] text-slate-500">
+                Cases that recovered organically — with zero outreach attempts.
+              </p>
+            </div>
           </div>
-          <div className="flex flex-wrap items-center gap-x-5 gap-y-1">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
             <span className="text-[11px] text-slate-400 num">
               {summary.self_cure_count} cases ({formatPercent(summary.self_cure_rate)}) recovered organically
             </span>
-            <span className="text-[11px] font-semibold text-emerald-400 num">
+            <span className="inline-flex items-center gap-1.5 rounded-md border border-emerald-800/50 bg-emerald-900/20 px-2 py-1 font-mono text-[11px] font-semibold tabular-nums text-emerald-400">
+              <Info className="h-3 w-3 cursor-help opacity-70" />
               +{formatPercent(summary.lift_over_self_cure)} lift from recovery engine
             </span>
           </div>
@@ -287,14 +383,23 @@ export default function DashboardPage() {
           className="lg:col-span-2"
           label="Pipeline"
           title="Recovery flow"
-          subtitle="Entered → active/promised → verified recovered. Only captured payments count."
+          subtitle="Total failed → engaged pool → verified captured. Stages are nested money pools, so each conversion is an honest share of the previous stage."
           bodyClassName="px-4 py-5"
         >
           <div className="max-w-lg">
             <RecoveryFunnel stages={funnel} formatAmount={money} />
           </div>
           <div className="mt-5 flex items-center justify-between border-t border-slate-800/70 pt-3 text-xs">
-            <span className="text-slate-500">Yield from at-risk pool</span>
+            <span className="flex items-center gap-1.5 text-slate-500">
+              Recovery yield
+              <span
+                className="inline-flex cursor-help"
+                aria-label={`Verified recovered (${money(map.recovered_revenue)}) ÷ total failed volume (${money(map.total_revenue)}) = ${formatPercent(map.recovery_rate)}`}
+                title={`Verified recovered (${money(map.recovered_revenue)}) ÷ total failed volume (${money(map.total_revenue)}) = ${formatPercent(map.recovery_rate)}`}
+              >
+                <Info className="h-3 w-3 opacity-70 transition-opacity hover:opacity-100" />
+              </span>
+            </span>
             <span className="font-semibold text-emerald-400 num">
               {formatPercent(map.recovery_rate)}
             </span>
@@ -327,7 +432,7 @@ export default function DashboardPage() {
             subtitle="Verified captured revenue after a payment failure enters recovery."
           />
           <div className="h-56">
-            <RecoveryAreaChart data={map.recovery_timeline} formatFull={moneyFull} />
+            <RecoveryAreaChart data={map.recovery_timeline} formatCompact={money} />
           </div>
         </Card>
 
@@ -344,8 +449,13 @@ export default function DashboardPage() {
           <div className="space-y-2">
             <CadenceStat
               label="Active recoveries"
-              value={`${openCaseCount}`}
-              sub="Cases in progress"
+              value={`${engagedCases.length}`}
+              sub="Engaged — outreach sent / in conversation"
+            />
+            <CadenceStat
+              label="Open backlog"
+              value={`${backlogCases.length}`}
+              sub="Unengaged — awaiting first touch"
             />
             <CadenceStat
               label="Pending promises"
@@ -358,9 +468,9 @@ export default function DashboardPage() {
               sub={`${money(map.payment_plan_recovery.total_amount)} total`}
             />
             <CadenceStat
-              label="Failed payments"
+              label="Total failed volume"
               value={`${map.cases_count}`}
-              sub="Total entering recovery"
+              sub={`${money(map.total_revenue)} original`}
             />
           </div>
         </Card>
@@ -408,14 +518,32 @@ function CadenceStat({
 
 const RecoveryAreaChart = memo(function RecoveryAreaChart({
   data,
-  formatFull,
+  formatCompact,
 }: {
   data: { label: string; recovered: number; cumulative: number }[]
-  formatFull: (amount: number) => string
+  formatCompact: (amount: number) => string
 }) {
   const clamped = useMemo(() => {
     return data.filter((d) => d.label <= TODAY_ISO)
   }, [data])
+
+  // Clean weekly ticks (e.g. "3 Jul, 10 Jul, 17 Jul") instead of a crowded
+  // daily axis: one label every 7 days, anchored at the first data point,
+  // with today's endpoint appended when it isn't already labelled.
+  const weeklyTicks = useMemo(() => {
+    if (clamped.length <= 8) return clamped.map((d) => d.label)
+    const ticks: string[] = []
+    for (let i = 0; i < clamped.length; i += 7) {
+      ticks.push(clamped[i].label)
+    }
+    const last = clamped[clamped.length - 1].label
+    const prev = ticks[ticks.length - 1]
+    const gapDays =
+      (Date.parse(last) - Date.parse(prev)) / (24 * 60 * 60 * 1000)
+    if (Number.isFinite(gapDays) && gapDays > 3) ticks.push(last)
+    return ticks
+  }, [clamped])
+
   return (
     <ResponsiveContainer width="100%" height="100%">
       <AreaChart data={clamped} margin={{ top: 6, right: 12, left: 0, bottom: 0 }}>
@@ -431,7 +559,7 @@ const RecoveryAreaChart = memo(function RecoveryAreaChart({
           tick={CHART_TICK}
           axisLine={{ stroke: "#334155" }}
           tickLine={false}
-          minTickGap={20}
+          ticks={weeklyTicks}
           domain={["dataMin", TODAY_ISO]}
           tickFormatter={(v: string) => {
             const d = new Date(`${v}T00:00:00`)
@@ -443,10 +571,10 @@ const RecoveryAreaChart = memo(function RecoveryAreaChart({
           tick={CHART_TICK_Y}
           axisLine={{ stroke: "#334155" }}
           tickLine={false}
-          tickFormatter={(v: number) => formatFull(v)}
-          width={76}
+          tickFormatter={(v: number) => formatCompact(v)}
+          width={64}
         />
-        <Tooltip content={<TimelineTooltip />} />
+        <Tooltip content={<TimelineTooltip formatCompact={formatCompact} />} />
         <Area
           type="monotone"
           dataKey="cumulative"
@@ -465,9 +593,10 @@ const RecoveryAreaChart = memo(function RecoveryAreaChart({
 interface TimelineTooltipProps {
   active?: boolean
   payload?: { payload: { label: string; recovered: number; cumulative: number } }[]
+  formatCompact?: (amount: number) => string
 }
 
-function TimelineTooltip({ active, payload }: TimelineTooltipProps) {
+function TimelineTooltip({ active, payload, formatCompact }: TimelineTooltipProps) {
   if (!active || !payload || payload.length === 0) return null
   const d = payload[0].payload
   const dateLabel = (() => {
@@ -479,13 +608,14 @@ function TimelineTooltip({ active, payload }: TimelineTooltipProps) {
       year: "numeric",
     })
   })()
+  const compact = formatCompact ?? ((a: number) => formatFullMoney(a))
   return (
     <div style={TOOLTIP_STYLE} className="rounded-lg px-3 py-2 text-xs shadow-xl">
       <p className="mb-1.5 font-semibold text-slate-200">{dateLabel}</p>
       <p className="flex items-center justify-between gap-5">
         <span className="text-slate-400">Recovered</span>
         <span className="font-medium tabular-nums text-emerald-300">
-          {formatFullMoney(d.cumulative)}
+          {compact(d.cumulative)}
         </span>
       </p>
     </div>

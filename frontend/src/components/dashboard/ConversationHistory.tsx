@@ -2,7 +2,9 @@ import { useEffect, useRef, useState, useCallback } from "react"
 import type { Conversation, ConversationMessage } from "../../types/analytics"
 import type { LiveRealtimeMessage, LiveQuickReply } from "../../services/realtime"
 import {
+  AlertTriangle,
   ArrowLeft,
+  Mail,
   Phone,
   Video,
   MoreVertical,
@@ -376,7 +378,10 @@ function WhatsAppEmailCard({ email }: { email: EmailDispatchData }) {
   return (
     <div className="mt-1 overflow-hidden rounded-lg border border-white/10 bg-[#1a2730]">
       <div className="flex items-center gap-2 border-b border-white/5 px-3 py-1.5">
-        <span className="text-[11px] font-semibold text-[#53bdeb]">📧 Email Dispatched</span>
+        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#53bdeb]">
+          <Mail className="h-3 w-3" />
+          Email Dispatched
+        </span>
         <span className={`ml-auto rounded border px-1.5 py-0.5 text-[9px] font-semibold ${
           status === "delivered" ? "text-[#00a884] border-[#00a884]/30 bg-[#00a884]/10"
             : status === "failed" ? "text-[#ea4335] border-[#ea4335]/30 bg-[#ea4335]/10"
@@ -655,8 +660,9 @@ function AttemptLimitBanner({ attemptCount, maxAttempts }: { attemptCount: numbe
   if (attemptCount < maxAttempts) return null
   return (
     <div className="mx-auto max-w-[85%] my-1 rounded-lg bg-[#1a2730] border border-[#ea4335]/20 px-3 py-1.5 text-center">
-      <span className="text-[11px] text-[#ea4335]">
-        ⚠️ Max attempts reached ({attemptCount}/{maxAttempts}) · Monitor mode
+      <span className="inline-flex items-center gap-1.5 text-[11px] text-[#ea4335]">
+        <AlertTriangle className="h-3 w-3" />
+        Max attempts reached ({attemptCount}/{maxAttempts}) · Monitor mode
       </span>
     </div>
   )
@@ -810,7 +816,6 @@ export default function ConversationHistory({
   customerPhone,
   onQuickReply,
   onSendMessage,
-  quickRepliesDisabled = false,
   attemptCount = 0,
   maxAttempts = 5,
   currentLanguage = "en",

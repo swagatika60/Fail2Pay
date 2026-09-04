@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
+import type { ComponentType } from "react"
+import { CheckCircle2, Clock3, MailPlus, Send, XCircle } from "lucide-react"
 import type { SentEmail } from "../../types/analytics"
 
 interface EmailHistoryProps {
@@ -7,21 +9,24 @@ interface EmailHistoryProps {
   onPayNow?: (caseId: string) => void
 }
 
-const STATUS_STYLES: Record<string, { bg: string; text: string; icon: string }> = {
-  pending: { bg: "bg-slate-600/30", text: "text-slate-400", icon: "⏳" },
-  sent: { bg: "bg-blue-500/20", text: "text-blue-400", icon: "📤" },
-  delivered: { bg: "bg-green-500/20", text: "text-green-400", icon: "✅" },
-  bounced: { bg: "bg-red-500/20", text: "text-red-400", icon: "❌" },
-  failed: { bg: "bg-red-500/20", text: "text-red-400", icon: "❌" },
+const STATUS_STYLES: Record<
+  string,
+  { bg: string; text: string; icon: ComponentType<{ className?: string }> }
+> = {
+  pending: { bg: "bg-slate-600/30", text: "text-slate-400", icon: Clock3 },
+  sent: { bg: "bg-blue-500/20", text: "text-blue-400", icon: Send },
+  delivered: { bg: "bg-green-500/20", text: "text-green-400", icon: CheckCircle2 },
+  bounced: { bg: "bg-red-500/20", text: "text-red-400", icon: XCircle },
+  failed: { bg: "bg-red-500/20", text: "text-red-400", icon: XCircle },
 }
 
 const TYPE_LABELS: Record<string, string> = {
-  failed_payment: "⚠️ Payment Failed",
-  payment_retry: "🔄 Payment Retry",
-  invoice: "📄 Invoice",
-  payment_plan_confirmation: "📋 Plan Confirmation",
+  failed_payment: "Payment Failed",
+  payment_retry: "Payment Retry",
+  invoice: "Invoice",
+  payment_plan_confirmation: "Plan Confirmation",
   promise_to_pay_reminder: "Promise Reminder",
-  payment_success: "✅ Payment Success",
+  payment_success: "Payment Success",
 }
 
 function formatDateTime(dateStr: string | null): string {
@@ -58,9 +63,10 @@ export default function EmailHistory({
             </p>
             <button
               onClick={onGenerateEmail}
-              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
+              className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
             >
-              📧 Generate matching email
+              <MailPlus className="h-4 w-4" />
+              Generate matching email
             </button>
           </div>
         )}
@@ -100,7 +106,7 @@ function EmailCard({
 }: {
   email: SentEmail
   html: boolean
-  style: { bg: string; text: string; icon: string }
+  style: { bg: string; text: string; icon: ComponentType<{ className?: string }> }
   typeLabel: string
   onPayNow?: (caseId: string) => void
 }) {
@@ -119,7 +125,7 @@ function EmailCard({
           <span
             className={`inline-flex items-center gap-0.5 rounded-full px-2 py-0.5 text-[10px] font-medium ${style.bg} ${style.text}`}
           >
-            {style.icon} {email.delivery_status}
+            <style.icon className="h-3.5 w-3.5" /> {email.delivery_status}
           </span>
         </div>
         <span className="text-xs text-slate-500">
@@ -260,8 +266,9 @@ function Previews({
         className="h-[420px] w-full bg-white"
       />
       {caseId && (
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-emerald-600/90 px-3 py-2 text-center text-xs font-medium text-white">
-          ✅ Payment flow triggered for case #{caseId.slice(0, 8)}
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-center gap-1.5 bg-emerald-600/90 px-3 py-2 text-xs font-medium text-white">
+          <CheckCircle2 className="h-3.5 w-3.5" />
+          Payment flow triggered for case #{caseId.slice(0, 8)}
         </div>
       )}
     </div>

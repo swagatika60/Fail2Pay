@@ -1,19 +1,31 @@
 import { useEffect, useRef, useState } from "react"
+import type { ComponentType } from "react"
+import {
+  AlertTriangle,
+  Bell,
+  CalendarDays,
+  CreditCard,
+  Link2,
+  RefreshCw,
+  StopCircle,
+  TrendingUp,
+  Wallet,
+} from "lucide-react"
 import type { RetrySequencer } from "../../services/operations"
 import { fetchPlanRetrySequencer } from "../../services/operations"
 import { formatCurrency } from "./MetricCard"
 
-const ACTION_ICONS: Record<string, string> = {
-  degrade_trigger: "🚨",
-  send_upfront_link: "💸",
-  send_gateway_link: "🔗",
-  reminder_24h: "⏰",
-  split_due: "📅",
-  split_reminder: "🔔",
-  escalate_review: "📈",
-  installment_due: "💳",
-  reminder: "🔔",
-  review: "🔄",
+const ACTION_ICONS: Record<string, ComponentType<{ className?: string }>> = {
+  degrade_trigger: AlertTriangle,
+  send_upfront_link: Wallet,
+  send_gateway_link: Link2,
+  reminder_24h: Bell,
+  split_due: CalendarDays,
+  split_reminder: Bell,
+  escalate_review: TrendingUp,
+  installment_due: CreditCard,
+  reminder: Bell,
+  review: RefreshCw,
 }
 
 export const ACTION_BADGES: Record<string, { label: string; bg: string; text: string }> = {
@@ -95,8 +107,16 @@ export default function RetrySequencerPanel({
         }`}
       >
         <div className="flex items-center gap-2">
-          <span className="text-base">
-            {degraded ? (strategy === "SPLIT_PLAN" ? "💳" : "🔗") : "📅"}
+          <span className="text-slate-400">
+            {degraded ? (
+              strategy === "SPLIT_PLAN" ? (
+                <CreditCard className="h-4 w-4" />
+              ) : (
+                <Link2 className="h-4 w-4" />
+              )
+            ) : (
+              <CalendarDays className="h-4 w-4" />
+            )}
           </span>
           <div>
             <p
@@ -127,9 +147,12 @@ export default function RetrySequencerPanel({
           )}
 
           {!loading && seq && seq.blocked && (
-            <div className="rounded-lg border border-red-800 bg-red-500/10 p-3 text-xs text-red-300">
-              🛑 Retries halted: hard-stop condition ({seq.block_reason}). No
-              automated outreach will be scheduled.
+            <div className="flex items-start gap-2 rounded-lg border border-red-800 bg-red-500/10 p-3 text-xs text-red-300">
+              <StopCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>
+                Retries halted: hard-stop condition ({seq.block_reason}). No
+                automated outreach will be scheduled.
+              </span>
             </div>
           )}
 
@@ -163,7 +186,15 @@ export default function RetrySequencerPanel({
                     <span className="absolute -left-[1.43rem] top-1 h-2.5 w-2.5 rounded-full bg-slate-500" />
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-xs font-medium text-slate-200">
-                        {ACTION_ICONS[step.action] ?? "•"} {step.label}
+                        {(() => {
+                          const Icon = ACTION_ICONS[step.action]
+                          return Icon ? (
+                            <Icon className="h-3.5 w-3.5" />
+                          ) : (
+                            <span className="text-slate-600">•</span>
+                          )
+                        })()}{" "}
+                        {step.label}
                       </p>
                       <span className="shrink-0 text-[10px] text-slate-500">
                         {fmt(step.scheduled_for)}

@@ -12,6 +12,7 @@ import type {
   PolicyTrace,
   CaseSchedule,
   VerifiedImpactLedger,
+  VoiceCall,
 } from "../types/analytics"
 
 interface CacheEntry<T> {
@@ -70,13 +71,23 @@ export async function fetchRecoveryCaseDetail(
   if (!opts.bypass) {
     return cached(caseId, detailCache, () =>
       fetch(`/api/analytics/recovery-cases/${caseId}`).then(async (response) => {
-        if (!response.ok) throw new Error("Failed to fetch case detail")
+        if (!response.ok) {
+          console.error(
+            `[CaseDetail] fetch failed — status=${response.status} caseId=${caseId}`,
+          )
+          throw new Error(`Failed to fetch case detail (HTTP ${response.status})`)
+        }
         return response.json() as Promise<RecoveryCaseDetail>
       }),
     )
   }
   const response = await fetch(`/api/analytics/recovery-cases/${caseId}`)
-  if (!response.ok) throw new Error("Failed to fetch case detail")
+  if (!response.ok) {
+    console.error(
+      `[CaseDetail] fetch failed (bypass) — status=${response.status} caseId=${caseId}`,
+    )
+    throw new Error(`Failed to fetch case detail (HTTP ${response.status})`)
+  }
   return response.json()
 }export async function fetchCasePromises(caseId: string): Promise<PaymentPromise[]> {
   const response = await fetch(`/api/cases/${caseId}/promises`)
@@ -103,6 +114,41 @@ export async function fetchCaseConversations(
 export async function fetchCaseEmails(caseId: string): Promise<SentEmail[]> {
   const response = await fetch(`/api/cases/${caseId}/emails`)
   if (!response.ok) throw new Error("Failed to fetch emails")
+  return response.json()
+}
+
+export async function fetchCaseVoiceCalls(caseId: string): Promise<VoiceCall[]> {
+  const response = await fetch(`/api/cases/${caseId}/voice-calls`)
+  if (!response.ok) throw new Error("Failed to fetch voice calls")
+  return response.json()
+}
+
+export interface VoiceCallInitiateResult {
+  status: string
+  reason?: string
+  stop_condition?: string
+  case_id?: string
+  to_phone?: string
+  language?: string
+}
+
+/**
+ * Trigger an outbound recovery voice call for a case.
+ *
+ * With Twilio credentials configured this places a real call; without them the
+ * backend logs the attempt honestly and returns a preview (never a fake call).
+ */
+export async function initiateVoiceCall(
+  caseId: string,
+  toPhone: string,
+  language = "en",
+): Promise<VoiceCallInitiateResult> {
+  const response = await fetch("/api/voice/outbound", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ case_id: caseId, to_phone: toPhone, language }),
+  })
+  if (!response.ok) throw new Error("Failed to initiate voice call")
   return response.json()
 }
 
@@ -147,4 +193,35 @@ export async function runAutonomousScheduler(): Promise<{
   })
   if (!response.ok) throw new Error("Failed to run autonomous scheduler")
   return response.json()
+}
+
+export interface SimulateSingleCaseResult {
+  case_id: string
+  customer_name: string
+  original_amount: number
+  risk_level: string
+  status: string
+}
+
+/**
+ * Create a single persisted simulation case in the backend database.
+ *
+ * Unlike the dashboard's client-side mock, this creates real DB rows
+ * (Customer → RevenueEvent → RecoveryCase → AuditEvent → AgentSteps)
+ * so the case survives page refreshes and can be navigated to from
+ * the cases list.
+ */
+export async function simulateSingleCase(
+  opts: { amount?: number; name?: string } = {},
+): Promise<SimulateSingleCaseResult> {
+  const body: Record<string, unknown> = {}
+  if (opts.amount && opts.amount > 0) body.amount = opts.amount
+  if (opts.name) body.name = opts.name
+  const response = await fetch("/api/simulation/single", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) throw new Error("Failed to create simulated case")
+  return response.json() as Promise<SimulateSingleCaseResult>
 }

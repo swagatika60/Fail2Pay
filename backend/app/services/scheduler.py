@@ -2,10 +2,12 @@
 
 Spaced-out reminder cadence (absolute from T0):
     T+0      Initial recovery message
-    T+4h     Reminder 1 (4 hours after failure)
-    T+8h     Reminder 2 (8 hours after failure)
-    T+16h    Reminder 3 (16 hours after failure)
-    T+24h    Reminder 4 (24 hours after failure)
+    T+2h     Reminder 1 (2 hours after failure)
+    T+4h     Reminder 2 (4 hours after failure)
+    T+8h     Reminder 3 (8 hours after failure)
+    T+16h    Reminder 4 (16 hours after failure)
+    T+24h    Reminder 5 (24 hours after failure)
+    T+36h    Reminder 6 (36 hours after failure)
     T+48h    Final reminder (48 hours after failure)
     Then:    STOP COMPLETELY
 
@@ -45,7 +47,6 @@ from app.crud.scheduled_action import (
     cancel_pending_actions_for_case,
     create_scheduled_action,
     get_due_actions,
-    get_pending_actions_for_case,
     mark_action_executed,
     get_actions_by_case,
 )
@@ -53,26 +54,29 @@ from app.models.recovery_case import RecoveryCase, RecoveryStatus
 from app.models.scheduled_action import ScheduledAction
 from app.schemas.scheduled_action import ScheduledActionCreate
 from app.services.agent_engine import format_amount
-from app.services.workflow_engine import _check_stop_conditions
 
 logger = logging.getLogger(__name__)
 
 
 # --- Default schedule configuration ---
-# Spaced-out cadence (absolute from T0):
+# No-response cadence (absolute from T0):
 # T+0      Initial message (sent by orchestrator)
-# T+4h     Reminder 1
-# T+8h     Reminder 2
-# T+16h    Reminder 3
-# T+24h    Reminder 4
+# T+2h     Reminder 1
+# T+4h     Reminder 2
+# T+8h     Reminder 3
+# T+16h    Reminder 4
+# T+24h    Reminder 5
+# T+36h    Reminder 6
 # T+48h    Final reminder
 # Then: STOP COMPLETELY
 DEFAULT_SCHEDULE_CONFIG = [
     {"delay_hours": 0, "action_type": "initial_message", "channel": "whatsapp"},
-    {"delay_hours": 4, "action_type": "reminder_1", "channel": "whatsapp"},
-    {"delay_hours": 8, "action_type": "reminder_2", "channel": "whatsapp"},
-    {"delay_hours": 16, "action_type": "reminder_3", "channel": "whatsapp"},
-    {"delay_hours": 24, "action_type": "reminder_4", "channel": "whatsapp"},
+    {"delay_hours": 2, "action_type": "reminder_1", "channel": "whatsapp"},
+    {"delay_hours": 4, "action_type": "reminder_2", "channel": "whatsapp"},
+    {"delay_hours": 8, "action_type": "reminder_3", "channel": "whatsapp"},
+    {"delay_hours": 16, "action_type": "reminder_4", "channel": "whatsapp"},
+    {"delay_hours": 24, "action_type": "reminder_5", "channel": "whatsapp"},
+    {"delay_hours": 36, "action_type": "reminder_6", "channel": "whatsapp"},
     {"delay_hours": 48, "action_type": "final_reminder", "channel": "whatsapp"},
 ]
 
@@ -81,20 +85,12 @@ STOP_KEYWORDS = [
     "stop", "unsubscribe", "don't contact", "do not contact",
     "leave me alone", "don't message", "do not message",
     "i don't want", "no more", "opt out", "optout",
+    "stop messaging", "stop contacting", "stop sending",
+    "stop reminders", "no more messages", "no more reminders",
+    "don't send", "do not send", "don't text",
     "रुको", "बंद", "मत भेजो",  # Hindi
-    "band karo", "mat bhejo",  # Hinglish
+    "band karo", "mat bhejo", "mat karo",  # Hinglish
 ]
-
-# --- WhatsApp audit touchpoint schedule ---
-# Used by the live WhatsApp recovery stream: the first touchpoint is dispatched
-# immediately on payment_failed and two automated reminders follow at 24h and
-# 72h (so the case reaches a human auditor / final escalation within the SLA).
-WHATSAPP_TOUCHPOINT_CONFIG = [
-    {"delay_hours": 0, "action_type": "touchpoint_immediate", "channel": "whatsapp"},
-    {"delay_hours": 24, "action_type": "touchpoint_24h", "channel": "whatsapp"},
-    {"delay_hours": 72, "action_type": "touchpoint_72h", "channel": "whatsapp"},
-]
-
 
 def schedule_recovery_workflow(
     db: Session,
@@ -103,8 +99,8 @@ def schedule_recovery_workflow(
 ) -> list[dict]:
     """Schedule the no-response recovery workflow.
 
-    Creates 6 scheduled actions with spaced-out cadence (absolute from T0):
-        T+0 → T+4h → T+8h → T+16h → T+24h → T+48h → STOP
+    Creates 8 scheduled actions with spaced-out cadence (absolute from T0):
+        T+0 → T+2h → T+4h → T+8h → T+16h → T+24h → T+36h → T+48h → STOP
 
     Before each reminder, the scheduler checks payment status. If the
     payment is already SETTLED or PAID, all remaining reminders are
@@ -151,33 +147,6 @@ def schedule_recovery_workflow(
         "Scheduled %d actions for case %s", len(created), case.id
     )
     return created
-
-
-def schedule_whatsapp_touchpoints(
-    db: Session,
-    case: RecoveryCase,
-) -> list[dict]:
-    """Schedule the WhatsApp audit touchpoint sequence (0h / 24h / 72h).
-
-    Called when a real Meta payment.failed webhook creates a recovery case.
-    Touchpoint #1 (immediate) is dispatched by the orchestrator right away;
-    the 24h and 72h entries are queued here for the background worker.
-    """
-    return schedule_recovery_workflow(db, case, schedule_config=WHATSAPP_TOUCHPOINT_CONFIG)
-
-
-def schedule_followup_touchpoints(
-    db: Session,
-    case: RecoveryCase,
-) -> list[dict]:
-    """Queue the follow-up touchpoints (24h / 72h) AFTER the immediate ping.
-
-    Called post-ingestion once the first touch has already been dispatched by
-    the orchestrator, so we only queue the two later escalations for the
-    background worker — the immediate (T+0) entry is not re-created.
-    """
-    followup_config = WHATSAPP_TOUCHPOINT_CONFIG[1:]  # 24h, 72h
-    return schedule_recovery_workflow(db, case, schedule_config=followup_config)
 
 
 def schedule_promise_reminder(
@@ -510,7 +479,10 @@ def process_single_action(db: Session, action: ScheduledAction) -> dict:
     )
 
     # Typed domain event so the live console can badge the reminder as sent.
-    if action.action_type in ("reminder_1", "reminder_2", "reminder_3", "final_reminder"):
+    if action.action_type in (
+        "reminder_1", "reminder_2", "reminder_3", "reminder_4",
+        "reminder_5", "reminder_6", "final_reminder",
+    ):
         publish_case_event(
             event_type="reminder_sent",
             case_id=str(case.id),
@@ -613,10 +585,13 @@ def _build_reminder_text(case: RecoveryCase, customer_name: str | None, action: 
 
     Copy varies by action type to match the spec cadence:
     - initial_message: Gentle heads-up with root cause advice (sent by orchestrator)
-    - reminder_1 (T+4h): First follow-up
-    - reminder_2 (T+12h): Second follow-up
-    - reminder_3 (T+28h): Third follow-up
-    - final_reminder (T+60h): Final check-in before STOP
+    - reminder_1 (T+2h): First follow-up
+    - reminder_2 (T+4h): Second follow-up
+    - reminder_3 (T+8h): Third follow-up
+    - reminder_4 (T+16h): Fourth follow-up
+    - reminder_5 (T+24h): Fifth follow-up
+    - reminder_6 (T+36h): Sixth follow-up
+    - final_reminder (T+48h): Final check-in before STOP
     """
     amount = format_amount(case.remaining_amount) if case.remaining_amount else ""
     name = customer_name or ""
@@ -635,25 +610,43 @@ def _build_reminder_text(case: RecoveryCase, customer_name: str | None, action: 
     if action.action_type == "initial_message":
         return f"{prefix}Your payment of {amount} is pending. {cause_hint}Please complete it now to resolve this."
     elif action.action_type == "reminder_1":
-        # First follow-up — 4 hours after initial
+        # First follow-up — 2 hours after initial
         return (
             f"{prefix}Your payment of {amount} is still pending. "
             f"{cause_hint}Please complete it to avoid further follow-ups."
         )
     elif action.action_type == "reminder_2":
-        # Second follow-up — 12 hours after initial
+        # Second follow-up — 4 hours after initial
         return (
             f"{prefix}Your payment of {amount} remains unresolved. "
             f"{cause_hint}You can split into installments or tell us a preferred date."
         )
     elif action.action_type == "reminder_3":
-        # Third follow-up — 28 hours after initial
+        # Third follow-up — 8 hours after initial
         return (
             f"{prefix}We haven't heard from you about the pending payment of {amount}. "
             f"Please reply or pay to keep your account in good standing."
         )
+    elif action.action_type == "reminder_4":
+        # Fourth follow-up — 16 hours after initial
+        return (
+            f"{prefix}Your payment of {amount} is still pending. "
+            f"{cause_hint}You can split it into installments or reply with a date that suits you."
+        )
+    elif action.action_type == "reminder_5":
+        # Fifth follow-up — 24 hours after initial
+        return (
+            f"{prefix}Just checking in about the pending payment of {amount}. "
+            f"We're here to help — reply to set up a payment plan or get support."
+        )
+    elif action.action_type == "reminder_6":
+        # Sixth follow-up — 36 hours after initial
+        return (
+            f"{prefix}We still haven't received your payment of {amount}. "
+            f"Please reply or complete your payment so we can close this out."
+        )
     elif action.action_type == "final_reminder":
-        # Final check-in — 60 hours after initial, before STOP
+        # Final check-in — 48 hours after initial, before STOP
         return (
             f"{prefix}This is your final reminder for payment of {amount}. "
             f"After this, automated follow-ups will stop. Please reply or pay now."
@@ -743,7 +736,7 @@ def handle_customer_response(
     detected_intent = intent_response.result.intent
 
     # --- Step 4: Execute action based on intent ---
-    from app.services.intent_action_mapper import get_action_for_intent, render_response
+    from app.services.intent_action_mapper import get_action_for_intent
     from app.crud.customer import get_customer
 
     action = get_action_for_intent(detected_intent)
@@ -936,7 +929,7 @@ def _check_customer_responded(db: Session, case: RecoveryCase) -> bool:
 
     Looks for inbound messages in the conversation after the last outbound message.
     """
-    from app.models.conversation import Conversation, ConversationStatus
+    from app.models.conversation import Conversation
     from app.models.conversation_message import ConversationMessage
     from sqlalchemy import select
 

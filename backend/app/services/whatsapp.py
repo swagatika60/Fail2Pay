@@ -16,8 +16,6 @@ Environment variables:
 - WHATSAPP_VERIFY_TOKEN
 """
 
-import hashlib
-import hmac
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -30,7 +28,6 @@ from app.crud.conversation import (
     create_conversation,
     create_conversation_message,
     get_active_conversations_by_case,
-    get_conversation,
 )
 from app.models.conversation import Conversation, ConversationStatus
 from app.schemas.conversation import ConversationCreate
@@ -445,13 +442,19 @@ def _process_inbound_text(
         logger.warning("Empty inbound message from %s", from_phone)
         return result
 
-    # Find the conversation by phone number
-    conversation = _find_conversation_by_phone(db, from_phone)
+    # Find (or create) a WhatsApp conversation for this phone number.
+    # The agent must ALWAYS be ready to respond: if the phone-based lookup
+    # fails (e.g. no outbound message recorded yet), we fall back to finding
+    # the customer + recovery case by phone and wiring up their conversation,
+    # so a real reply can still be generated and persisted.
+    conversation = _get_or_create_whatsapp_conversation_for_phone(db, from_phone)
     if not conversation:
         logger.warning(
-            "No active conversation found for phone %s — message ignored",
+            "No customer or recovery case could be resolved for phone %s — "
+            "cannot generate a contextual reply",
             from_phone,
         )
+        result["action_taken"] = "unresolved_phone"
         return result
 
     # --- Step 1: Save inbound message ---
@@ -503,25 +506,43 @@ def _process_inbound_text(
         message_type,
     )
 
+    # --- Step 1b: Deterministic opt-out guard (safety rule, never AI-overridable) ---
+    # Explicit stop/opt-out language short-circuits intent classification with
+    # STOP_REQUEST. An LLM mislabelling an opt-out (or an AI outage) must never
+    # keep sending recovery messages to a customer who opted out — this uses the
+    # same multilingual stop keywords as the scheduler's deterministic stop path.
+    from app.services.scheduler import STOP_KEYWORDS
+    _opted_out = any(kw in content.lower() for kw in STOP_KEYWORDS)
+
     # --- Step 2: Classify intent ---
-    from app.schemas.intent import IntentDetectionRequest
-    from app.services.intent_detector import detect_intent
+    if _opted_out:
+        from types import SimpleNamespace as _SimpleNS
+        from app.schemas.intent import CustomerIntent
+        detected_intent = CustomerIntent.STOP_REQUEST
+        intent_response = _SimpleNS(
+            source="deterministic_opt_out",
+            result=_SimpleNS(intent=detected_intent, confidence=1.0),
+        )
+    else:
+        from app.schemas.intent import IntentDetectionRequest
+        from app.services.intent_detector import detect_intent
 
-    # Build conversation history for context
-    from app.crud.conversation import get_messages_by_conversation
-    history_msgs = get_messages_by_conversation(db, conversation.id)
-    history = [
-        {"role": "customer" if m.direction == "inbound" else "agent", "content": m.content}
-        for m in history_msgs[-5:]  # Last 5 messages for context
-    ]
+        # Build conversation history for context
+        from app.crud.conversation import get_messages_by_conversation
+        history_msgs = get_messages_by_conversation(db, conversation.id)
+        history = [
+            {"role": "customer" if m.direction == "inbound" else "agent", "content": m.content}
+            for m in history_msgs[-5:]  # Last 5 messages for context
+        ]
 
-    intent_request = IntentDetectionRequest(
-        message=content,
-        language=message.get("text", {}).get("language", {}).get("code", "en"),
-        conversation_history=history,
-    )
-    intent_response = detect_intent(intent_request)
-    detected_intent = intent_response.result.intent
+        intent_request = IntentDetectionRequest(
+            message=content,
+            language=message.get("text", {}).get("language", {}).get("code", "en"),
+            conversation_history=history,
+        )
+        intent_response = detect_intent(intent_request)
+        detected_intent = intent_response.result.intent
+
     result["intent"] = detected_intent.value
     result["intent_source"] = intent_response.source
 
@@ -543,10 +564,7 @@ def _process_inbound_text(
     )
 
     # --- Step 3: Get action for intent ---
-    from app.services.intent_action_mapper import (
-        get_action_for_intent,
-        render_response,
-    )
+    from app.services.intent_action_mapper import get_action_for_intent
     action = get_action_for_intent(detected_intent)
     result["action_type"] = action.action_type
 
@@ -731,6 +749,76 @@ def _process_inbound_text(
         response_message += f"\n\nInvoice: {inv_url}"
         if agent_payload and agent_payload.get("payment_card"):
             agent_payload["payment_card"]["url"] = inv_url
+
+    # --- AI Assist (optional, non-authoritative) ---
+    # When an LLM provider is configured, the deterministic reply is rephrased
+    # so it reads naturally in the customer's language. Validation preserves
+    # the payment URL and amounts verbatim, and any timeout/failure/invalid
+    # output falls back to the deterministic text. The action payload, policy
+    # decision and stop rules are NEVER modified — AI can only improve the
+    # wording, never override a business rule.
+    from app.services.ai_assist import (
+        personalize_message,
+        explain_failure_reason,
+        suggest_intervention_rank,
+    )
+
+    reply_language = wa_lang if wa_lang in ("hi", "hi-en") else "en"
+    failure_reason = (case.extra_data or {}).get("failure_reason")
+    personalization = personalize_message(
+        text=response_message,
+        language=reply_language,
+        intent=detected_intent.value,
+        customer_name=customer.name if customer else None,
+        amount_paise=case.remaining_amount,
+        case_id=str(case.id),
+        failure_reason=failure_reason,
+    )
+    if personalization["meta"].get("personalized"):
+        response_message = personalization["text"]
+        if agent_payload:
+            agent_payload["text"] = response_message
+            agent_payload.setdefault("ai_meta", {})["personalized"] = True
+        publish_reasoning_stream(
+            case_id=str(conversation.recovery_case_id),
+            stage="RESPONSE_GENERATION",
+            label="AI personalization applied",
+            detail=f"Deterministic reply rephrased naturally in {reply_language} — payment link preserved verbatim",
+            confidence=0.9,
+            metadata={"source": "ai", "intent": detected_intent.value},
+        )
+
+    # Advisory AI diagnosis (never authoritative): explain the gateway failure
+    # reason in the customer's language when the gateway provided one.
+    if failure_reason:
+        diagnosis = explain_failure_reason(failure_reason, language=reply_language)
+        if diagnosis["meta"].get("source") == "ai":
+            publish_reasoning_stream(
+                case_id=str(conversation.recovery_case_id),
+                stage="AI_DIAGNOSIS",
+                label="Root cause explained",
+                detail=diagnosis["text"],
+                confidence=0.85,
+                metadata={"failure_reason": failure_reason, "source": "ai"},
+            )
+
+    # Advisory AI intervention ranking — non-binding by construction. The
+    # intent-action mapper still selects the action; AI only suggests an order.
+    suggestion = suggest_intervention_rank(
+        amount_paise=case.remaining_amount,
+        risk_level=case.risk_level.upper() if case.risk_level else "MEDIUM",
+        failure_reason=failure_reason,
+        attempt_count=case.attempt_count,
+    )
+    if suggestion["meta"].get("source") == "ai":
+        publish_reasoning_stream(
+            case_id=str(conversation.recovery_case_id),
+            stage="AI_SUGGESTION",
+            label="Intervention suggestion (non-binding)",
+            detail="Suggested order: " + " → ".join(suggestion["ranked"]),
+            confidence=0.7,
+            metadata={"ranked": suggestion["ranked"], "binding": False},
+        )
 
     # The customer is actively negotiating → mark SCHEDULED cases as
     # engaged in active recovery (was a passive/no-response campaign).
@@ -1177,3 +1265,121 @@ def _find_conversation_by_phone(
         return messages[0].conversation
 
     return None
+
+
+def _normalize_phone(phone: str | None) -> str:
+    """Normalize a phone number to a comparable digit string.
+
+    Strips the WhatsApp prefix (e.g. "whatsapp:+91..."), country-code "+",
+    spaces, dashes and any other non-digit characters. Used so inbound
+    ``from`` numbers can be matched against the stored ``Customer.phone``.
+    """
+    if not phone:
+        return ""
+    return "".join(ch for ch in phone if ch.isdigit())
+
+
+def _get_or_create_whatsapp_conversation_for_phone(
+    db: Session, phone_number: str
+) -> Conversation | None:
+    """Resolve (or create) a WhatsApp conversation for an inbound phone.
+
+    Makes the agent "always ready to reply":
+
+    1. Try the existing outbound-message based lookup (fast path).
+    2. If no active conversation is found, look up the customer by phone and
+       pick their most recent non-terminal recovery case, then find or create
+       the WhatsApp conversation for that case.
+
+    Returns the Conversation or None when no customer/case can be resolved.
+    """
+    conversation = _find_conversation_by_phone(db, phone_number)
+    if conversation:
+        return conversation
+
+    from sqlalchemy import select
+    from app.models.customer import Customer
+    from app.models.recovery_case import RecoveryStatus
+    from app.crud.conversation import (
+        create_conversation,
+        get_conversations_by_case,
+    )
+    from app.crud.recovery_case import get_recovery_cases_by_customer
+    from app.schemas.conversation import ConversationCreate
+
+    normalized = _normalize_phone(phone_number)
+    if not normalized:
+        return None
+
+    customer = db.execute(
+        select(Customer)
+        .where(Customer.phone.isnot(None))
+        .order_by(Customer.created_at.desc())
+    ).scalars().all()
+
+    matched: Customer | None = None
+    digit_map = {}
+    for c in customer:
+        c_phone = _normalize_phone(c.phone)
+        if not c_phone:
+            continue
+        digit_map[c_phone] = c
+        if c_phone == normalized:
+            matched = c
+            break
+    if not matched:
+        # Trailing-country-code tolerant match, e.g. stored "+91XXXXXXXXX"
+        # matches inbound "91XXXXXXXXX" (with the leading "91" stripped).
+        trimmed = normalized[2:] if len(normalized) > 10 else ""
+        for c_phone, c in digit_map.items():
+            if trimmed and c_phone.endswith(trimmed) and len(c_phone) == len(normalized):
+                matched = c
+                break
+
+    if not matched:
+        logger.info(
+            "No customer matched for inbound phone %s",
+            phone_number,
+        )
+        return None
+
+    cases = get_recovery_cases_by_customer(db, matched.id)
+    terminal = (RecoveryStatus.RECOVERED, RecoveryStatus.LOST)
+    active_cases = [
+        case for case in cases if case.status not in terminal
+    ] or cases
+
+    if not active_cases:
+        logger.info(
+            "No recovery case for customer %s (inbound phone %s)",
+            matched.id,
+            phone_number,
+        )
+        return None
+
+    case = max(active_cases, key=lambda c: c.created_at)
+
+    existing = [
+        conv
+        for conv in get_conversations_by_case(db, case.id)
+        if conv.channel == "whatsapp"
+    ]
+    if existing:
+        conversation = existing[0]
+        if conversation.status != ConversationStatus.ACTIVE:
+            conversation.status = ConversationStatus.ACTIVE
+            db.commit()
+            db.refresh(conversation)
+        return conversation
+
+    conversation = create_conversation(
+        db,
+        ConversationCreate(recovery_case_id=case.id, channel="whatsapp"),
+    )
+    logger.info(
+        "Created WhatsApp conversation %s for inbound phone %s (case %s)",
+        conversation.id,
+        phone_number,
+        case.id,
+    )
+    return conversation
